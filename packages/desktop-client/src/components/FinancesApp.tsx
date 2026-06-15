@@ -12,6 +12,7 @@ import * as undo from '@actual-app/core/platform/client/undo';
 import { getLatestAppVersion, sync } from '#app/appSlice';
 import { ProtectedRoute } from '#auth/ProtectedRoute';
 import { Permissions } from '#auth/types';
+import { CashflowPage } from '#flow/CashflowPage';
 import { getFlowPages } from '#flow/flowPages';
 import { FlowPlaceholderPage } from '#flow/FlowPlaceholderPage';
 import { useAccounts } from '#hooks/useAccounts';
@@ -334,7 +335,13 @@ export function FinancesApp() {
                     <Route
                       key={page.id}
                       path={page.path}
-                      element={<FlowPlaceholderPage page={page} />}
+                      element={
+                        page.id === 'cashflow' ? (
+                          <CashflowPage />
+                        ) : (
+                          <FlowPlaceholderPage page={page} />
+                        )
+                      }
                     />
                   ))}
 

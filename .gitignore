@@ -3,6 +3,8 @@
 !data/.gitkeep
 /data2
 Actual-*
+!packages/desktop-client/src/flow/actual-adapter/
+!packages/desktop-client/src/flow/actual-adapter/**
 !actual-server.js
 **/xcuserdata/*
 export-2020-01-10.csv

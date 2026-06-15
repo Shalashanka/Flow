@@ -33,6 +33,8 @@
     "#mocks": "./src/mocks.tsx",
     "#mocks/*": "./src/mocks/*.ts",
     "#polyfills": "./src/polyfills.ts",
+    "#flow/actual-adapter": "./src/flow/actual-adapter/index.ts",
+    "#flow/CashflowPage": "./src/flow/CashflowPage.tsx",
     "#flow/FlowPlaceholderPage": "./src/flow/FlowPlaceholderPage.tsx",
     "#flow/flowPages": "./src/flow/flowPages.ts",
     "#components/forms": "./src/components/forms/index.tsx",
