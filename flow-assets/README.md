@@ -10,4 +10,6 @@ This folder is for Flow brand assets, such as:
 - social preview images
 - brand color notes
 
-Do not replace application assets yet. Actual app assets will be replaced during Task002.
+`flow-mark.svg` is a temporary Flow brand mark prepared for early browser metadata and favicon use.
+
+Final raster icons, desktop icons, splash images, and social preview images still need dedicated brand work.

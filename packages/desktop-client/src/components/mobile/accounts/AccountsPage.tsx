@@ -231,7 +231,7 @@ function EmptyMessage() {
     <View style={{ flex: 1, padding: 30 }}>
       <Text style={styles.text}>
         <Trans>
-          For Actual to be useful, you need to <strong>add an account</strong>.
+          For Flow to be useful, you need to <strong>add an account</strong>.
           You can link an account to automatically download transactions, or
           manage it locally yourself.
         </Trans>

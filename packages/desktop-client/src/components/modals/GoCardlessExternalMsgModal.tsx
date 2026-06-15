@@ -229,7 +229,7 @@ export function GoCardlessExternalMsgModal({
           <Trans>
             By enabling bank sync, you will be granting GoCardless (a third
             party service) read-only access to your entire account's transaction
-            history. This service is not affiliated with Actual in any way. Make
+            history. This service is not affiliated with Flow in any way. Make
             sure you've read and understand GoCardless's{' '}
             <Link
               variant="external"

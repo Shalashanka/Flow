@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { cp, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,6 +17,8 @@ import type { Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '../..');
+const yarnCli = path.resolve(repoRoot, '.yarn/releases/yarn-4.13.0.cjs');
 const reactCompilerInclude =
   /[\\/]desktop-client[\\/]src[\\/].*\.[jt]sx(?:$|\?)/;
 
@@ -188,8 +190,9 @@ const lootCoreBackend = (): Plugin => ({
   name: 'loot-core-backend',
   configureServer(server) {
     const child: ChildProcess = spawn(
-      'yarn',
+      process.execPath,
       [
+        yarnCli,
         'vite',
         'build',
         '--config',
@@ -217,6 +220,12 @@ const lootCoreBackend = (): Plugin => ({
       const url = new URL(req.url ?? '/', 'http://localhost');
       const filePath = path.join(lootCoreOutDir, url.pathname);
       if (!filePath.startsWith(lootCoreOutDir + path.sep)) return next();
+      if (!existsSync(filePath)) {
+        res.statusCode = 404;
+        res.end(`Not found: ${url.pathname}`);
+        return;
+      }
+
       const stream = createReadStream(filePath);
       stream
         .on('open', () => {

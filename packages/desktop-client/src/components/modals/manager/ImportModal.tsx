@@ -88,10 +88,12 @@ export function ImportModal() {
               </View>
             </Button>
             <Button style={itemStyle} onPress={() => onSelectType('actual')}>
-              <span style={{ fontWeight: 700 }}>Actual</span>
+              <span style={{ fontWeight: 700 }}>
+                <Trans>Flow / Actual</Trans>
+              </span>
               <View style={{ color: theme.pageTextLight }}>
                 <div>
-                  <Trans>Import a file exported from Actual</Trans>
+                  <Trans>Import a file exported from Flow or Actual</Trans>
                 </div>
               </View>
             </Button>

@@ -40,7 +40,7 @@ function RenderSimple({ error }: RenderSimpleProps) {
       <Text>
         <Trans>
           Your browser doesn't support IndexedDB in this environment, a feature
-          that Actual requires to run. This might happen if you are in private
+          that Flow requires to run. This might happen if you are in private
           browsing mode. Please try a different browser or turn off private
           browsing.
         </Trans>
@@ -54,7 +54,7 @@ function RenderSimple({ error }: RenderSimpleProps) {
     msg = (
       <Text>
         <Trans>
-          Actual requires access to <code>SharedArrayBuffer</code> in order to
+          Flow requires access to <code>SharedArrayBuffer</code> in order to
           function properly. If you're seeing this error, either your browser
           does not support <code>SharedArrayBuffer</code>, or your server is not
           sending the appropriate headers, or you are not using HTTPS. See{' '}
@@ -73,7 +73,7 @@ function RenderSimple({ error }: RenderSimpleProps) {
     msg = (
       <Text>
         <Trans>
-          Actual couldn't load a critical backend worker. Reload the page to try
+          Flow couldn't load a critical backend worker. Reload the page to try
           again; if the problem persists, do a hard refresh to clear any stale
           cached assets.
         </Trans>
@@ -152,9 +152,9 @@ function SharedArrayBufferOverride() {
     <>
       <Paragraph style={{ marginTop: 10 }}>
         <Trans>
-          Actual uses <code>SharedArrayBuffer</code> to allow usage from
-          multiple tabs at once and to ensure correct behavior when switching
-          files. While it can run without access to
+          Flow uses <code>SharedArrayBuffer</code> to allow usage from multiple
+          tabs at once and to ensure correct behavior when switching files.
+          While it can run without access to
           <code>SharedArrayBuffer</code>, you may encounter data loss or notice
           multiple budget files being merged with each other.
         </Trans>
@@ -167,7 +167,7 @@ function SharedArrayBufferOverride() {
           onChange={() => setUnderstand(!understand)}
         />{' '}
         <Trans>
-          I understand the risks, run Actual in the unsupported fallback mode
+          I understand the risks, run Flow in the unsupported fallback mode
         </Trans>
       </label>
       <Button
@@ -177,7 +177,7 @@ function SharedArrayBufferOverride() {
           window.location.reload();
         }}
       >
-        <Trans>Open Actual</Trans>
+        <Trans>Open Flow</Trans>
       </Button>
     </>
   ) : (
@@ -189,6 +189,42 @@ function SharedArrayBufferOverride() {
       <Trans>Advanced options</Trans>
     </Link>
   );
+}
+
+function getUnknownErrorMessage(error: unknown) {
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (
+    typeof error === 'number' ||
+    typeof error === 'boolean' ||
+    typeof error === 'bigint'
+  ) {
+    return error.toString();
+  }
+
+  if (typeof error === 'symbol') {
+    return error.description ?? 'Unknown symbol error';
+  }
+
+  if (error == null) {
+    return 'Unknown error';
+  }
+
+  if (
+    typeof error === 'object' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return error.message;
+  }
+
+  try {
+    return JSON.stringify(error, null, 2) ?? 'Unknown error';
+  } catch {
+    return 'Unknown error';
+  }
 }
 
 export function FatalError({ error: rawError }: FatalErrorProps) {
@@ -203,8 +239,8 @@ export function FatalError({ error: rawError }: FatalErrorProps) {
     rawError instanceof Error
       ? rawError
       : rawError && typeof rawError === 'object'
-        ? Object.assign(new Error(String(rawError)), rawError)
-        : new Error(String(rawError));
+        ? Object.assign(new Error(getUnknownErrorMessage(rawError)), rawError)
+        : new Error(getUnknownErrorMessage(rawError));
   const showSimpleRender = 'type' in error && error.type === 'app-init-failure';
   const isLazyLoadError = error instanceof LazyLoadFailedError;
 

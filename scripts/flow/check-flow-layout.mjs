@@ -2,8 +2,8 @@ import { accessSync, constants, statSync } from 'node:fs';
 import path from 'node:path';
 
 const requiredDirectories = [
-  'CODEX/tasks',
-  'CODEX/reports',
+  'AGENT_INSTRUCTIONS/CODEX/tasks',
+  'AGENT_INSTRUCTIONS/CODEX/reports',
   'packages/flow',
   'packages/flow/src',
   'packages/flow/src/actual-adapter',
@@ -25,9 +25,12 @@ for (const directory of requiredDirectories) {
 }
 
 try {
-  accessSync(path.join(process.cwd(), 'CODEX/reports'), constants.W_OK);
+  accessSync(
+    path.join(process.cwd(), 'AGENT_INSTRUCTIONS/CODEX/reports'),
+    constants.W_OK,
+  );
 } catch {
-  failures.push('CODEX/reports is not writable.');
+  failures.push('AGENT_INSTRUCTIONS/CODEX/reports is not writable.');
 }
 
 if (failures.length > 0) {

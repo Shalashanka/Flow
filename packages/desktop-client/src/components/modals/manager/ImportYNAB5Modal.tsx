@@ -95,7 +95,7 @@ export function ImportYNAB5Modal() {
               </Paragraph>
               <Paragraph>
                 <Trans>
-                  Once you have exported your data, select the file and Actual
+                  Once you have exported your data, select the file and Flow
                   will import it. Budgets may not match up exactly because
                   things work slightly differently, but you should be able to
                   fix up any problems.

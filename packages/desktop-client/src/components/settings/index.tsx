@@ -54,8 +54,8 @@ function About() {
     <Setting>
       <Text>
         <Trans>
-          <strong>Actual</strong> is a super fast privacy-focused app for
-          managing your finances.
+          <strong>Flow</strong> is a super fast privacy-focused app for managing
+          your finances.
         </Trans>
       </Text>
       <View
@@ -139,7 +139,7 @@ function AdvancedAbout() {
     <Setting>
       <Text>
         <Trans>
-          <strong>IDs</strong> are the names Actual uses to identify your budget
+          <strong>IDs</strong> are the names Flow uses to identify your budget
           internally. There are several different IDs associated with your
           budget. The Budget ID is used to identify your budget file. The Sync
           ID is used to access the budget on the server.

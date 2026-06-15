@@ -22,6 +22,7 @@ import { View } from '@actual-app/components/view';
 import { css } from '@emotion/css';
 import { Command } from 'cmdk';
 
+import { getFlowPages } from '#flow/flowPages';
 import { useAccounts } from '#hooks/useAccounts';
 import { useDashboardPages } from '#hooks/useDashboardPages';
 import { useMetadataPref } from '#hooks/useMetadataPref';
@@ -117,6 +118,12 @@ export function CommandBar() {
       { id: 'rules', name: t('Rules'), path: '/rules', Icon: SvgTuning },
       { id: 'tags', name: t('Tags'), path: '/tags', Icon: SvgTag },
       { id: 'settings', name: t('Settings'), path: '/settings', Icon: SvgCog },
+      ...getFlowPages(t).map(page => ({
+        id: `flow-${page.id}`,
+        name: page.title,
+        path: page.path,
+        Icon: page.Icon,
+      })),
       {
         id: 'accounts',
         name: t('All Accounts'),

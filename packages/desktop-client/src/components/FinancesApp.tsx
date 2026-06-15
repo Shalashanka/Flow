@@ -12,6 +12,8 @@ import * as undo from '@actual-app/core/platform/client/undo';
 import { getLatestAppVersion, sync } from '#app/appSlice';
 import { ProtectedRoute } from '#auth/ProtectedRoute';
 import { Permissions } from '#auth/types';
+import { getFlowPages } from '#flow/flowPages';
+import { FlowPlaceholderPage } from '#flow/FlowPlaceholderPage';
 import { useAccounts } from '#hooks/useAccounts';
 import { useGlobalPref } from '#hooks/useGlobalPref';
 import { useLocalPref } from '#hooks/useLocalPref';
@@ -105,6 +107,7 @@ export function FinancesApp() {
   );
 
   const multiuserEnabled = useMultiuserEnabled();
+  const flowPages = getFlowPages(t);
 
   const init = useEffectEvent(() => {
     // Wait a little bit to make sure the sync button will get the
@@ -119,7 +122,7 @@ export function FinancesApp() {
         addNotification({
           notification: {
             type: 'message',
-            title: t('A new version of Actual is available!'),
+            title: t('A new version of Flow is available!'),
             message: t(
               'Click the button below to reload and apply the update.',
             ),
@@ -155,15 +158,15 @@ export function FinancesApp() {
           addNotification({
             notification: {
               type: 'message',
-              title: t('A new version of Actual is available!'),
+              title: t('A new version of Flow is available!'),
               message:
                 (process.env.REACT_APP_IS_PIKAPODS ?? '').toLowerCase() ===
                 'true'
                   ? t(
-                      'A new version of Actual is available! Your Pikapods instance will be automatically updated in the next few days - no action needed.',
+                      'A new version of Flow is available! Your Pikapods instance will be automatically updated in the next few days - no action needed.',
                     )
                   : t(
-                      'Version {{latestVersion}} of Actual was recently released.',
+                      'Version {{latestVersion}} of Flow was recently released.',
                       { latestVersion: versionInfo.latestVersion },
                     ),
               sticky: true,
@@ -327,6 +330,13 @@ export function FinancesApp() {
                   />
                   <Route path="/tags" element={<ManageTagsPage />} />
                   <Route path="/settings" element={<Settings />} />
+                  {flowPages.map(page => (
+                    <Route
+                      key={page.id}
+                      path={page.path}
+                      element={<FlowPlaceholderPage page={page} />}
+                    />
+                  ))}
 
                   <Route
                     path="/gocardless/link"
@@ -409,6 +419,13 @@ export function FinancesApp() {
                 <Route path="/rules" element={<MobileNavTabs />} />
                 <Route path="/payees" element={<MobileNavTabs />} />
                 <Route path="/schedules" element={<MobileNavTabs />} />
+                {flowPages.map(page => (
+                  <Route
+                    key={page.id}
+                    path={page.path}
+                    element={<MobileNavTabs />}
+                  />
+                ))}
                 <Route path="*" element={null} />
               </Routes>
             </MobilePageHeaderProvider>

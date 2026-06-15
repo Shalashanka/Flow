@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Flow">
+  <rect width="64" height="64" rx="16" fill="#0f172a" />
+  <path
+    d="M14 36c9 0 9-16 18-16s9 16 18 16"
+    fill="none"
+    stroke="#38bdf8"
+    stroke-linecap="round"
+    stroke-width="7"
+  />
+  <path
+    d="M14 45c9 0 9-16 18-16s9 16 18 16"
+    fill="none"
+    stroke="#22c55e"
+    stroke-linecap="round"
+    stroke-width="7"
+  />
+</svg>
+

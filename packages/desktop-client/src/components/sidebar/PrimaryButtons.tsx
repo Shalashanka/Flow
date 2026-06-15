@@ -16,6 +16,7 @@ import {
 import { SvgCalendar3 } from '@actual-app/components/icons/v2';
 import { View } from '@actual-app/components/view';
 
+import { getFlowPages } from '#flow/flowPages';
 import { useIsTestEnv } from '#hooks/useIsTestEnv';
 import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
 
@@ -24,42 +25,66 @@ import { SecondaryItem } from './SecondaryItem';
 
 export function PrimaryButtons() {
   const { t } = useTranslation();
-  const [isOpen, setOpen] = useState(false);
-  const onToggle = useCallback(() => setOpen(open => !open), []);
+  const [isMoreOpen, setMoreOpen] = useState(false);
+  const onMoreToggle = useCallback(() => setMoreOpen(open => !open), []);
   const location = useLocation();
+  const flowPages = getFlowPages(t);
+  const primaryFlowPages = flowPages.filter(
+    page => page.sidebarGroup === 'primary',
+  );
+  const moreFlowPages = flowPages.filter(page => page.sidebarGroup === 'more');
 
   const syncServerStatus = useSyncServerStatus();
   const isTestEnv = useIsTestEnv();
   const isUsingServer = syncServerStatus !== 'no-server' || isTestEnv;
 
-  const isActive = [
+  const isMoreActive = [
+    ...moreFlowPages.map(page => page.path),
     '/payees',
     '/rules',
     '/bank-sync',
+    '/tags',
     '/settings',
     '/tools',
   ].some(route => location.pathname.startsWith(route));
 
   useEffect(() => {
-    if (isActive) {
-      setOpen(true);
+    if (isMoreActive) {
+      setMoreOpen(true);
     }
-  }, [isActive, location.pathname]);
+  }, [isMoreActive, location.pathname]);
 
   return (
     <View style={{ flexShrink: 0 }}>
       <Item title={t('Budget')} Icon={SvgWallet} to="/budget" />
       <Item title={t('Reports')} Icon={SvgReports} to="/reports" />
       <Item title={t('Schedules')} Icon={SvgCalendar3} to="/schedules" />
+      {primaryFlowPages.map(page => (
+        <Item
+          key={page.id}
+          title={page.title}
+          Icon={page.Icon}
+          to={page.path}
+        />
+      ))}
       <Item
         title={t('More')}
-        Icon={isOpen ? SvgCheveronDown : SvgCheveronRight}
-        onClick={onToggle}
-        style={{ marginBottom: isOpen ? 8 : 0 }}
-        forceActive={!isOpen && isActive}
+        Icon={isMoreOpen ? SvgCheveronDown : SvgCheveronRight}
+        onClick={onMoreToggle}
+        style={{ marginBottom: isMoreOpen ? 8 : 0 }}
+        forceActive={!isMoreOpen && isMoreActive}
       />
-      {isOpen && (
+      {isMoreOpen && (
         <>
+          {moreFlowPages.map(page => (
+            <SecondaryItem
+              key={page.id}
+              title={page.title}
+              Icon={page.Icon}
+              to={page.path}
+              indent={15}
+            />
+          ))}
           <SecondaryItem
             title={t('Payees')}
             Icon={SvgStoreFront}
