@@ -248,7 +248,19 @@ export function FlowSettingsPage() {
   }
 
   return (
-    <Page header={t('Flow Settings')}>
+    <Page
+      header={
+        <FlowSettingsHeader
+          title={t('Flow Settings')}
+          isDirty={isDirty}
+          isSaving={isSaving}
+          savedAt={lastSavedAt ?? settings.updatedAt}
+          dateFormat={dateFormat}
+          statusKind={status?.kind}
+          statusText={statusText}
+        />
+      }
+    >
       <View
         style={{
           width: '100%',
@@ -277,12 +289,6 @@ export function FlowSettingsPage() {
         )}
 
         <ActionBar
-          isDirty={isDirty}
-          isSaving={isSaving}
-          statusText={statusText}
-          statusKind={status?.kind}
-          savedAt={lastSavedAt ?? settings.updatedAt}
-          dateFormat={dateFormat}
           onSave={handleSave}
           onReset={handleReset}
           onExport={handleExport}
@@ -478,32 +484,47 @@ export function FlowSettingsPage() {
 }
 
 type ActionBarProps = {
-  isDirty: boolean;
-  isSaving: boolean;
-  statusText: string | null;
-  statusKind?: StatusState['kind'];
-  savedAt: string | null;
-  dateFormat: string;
   onSave: () => void;
   onReset: () => void;
   onExport: () => void;
   onImport: () => void;
 };
 
-function ActionBar({
+type FlowSettingsHeaderProps = {
+  title: string;
+  isDirty: boolean;
+  isSaving: boolean;
+  savedAt: string | null;
+  dateFormat: string;
+  statusKind?: StatusState['kind'];
+  statusText: string | null;
+};
+
+function FlowSettingsHeader({
+  title,
   isDirty,
   isSaving,
-  statusText,
-  statusKind,
   savedAt,
   dateFormat,
-  onSave,
-  onReset,
-  onExport,
-  onImport,
-}: ActionBarProps) {
-  const { t } = useTranslation();
+  statusKind,
+  statusText,
+}: FlowSettingsHeaderProps) {
+  return (
+    <View data-testid="flow-settings-sticky-header" style={stickyHeaderStyle}>
+      <Text style={{ fontSize: 25, fontWeight: 500 }}>{title}</Text>
+      <SaveIndicator
+        isDirty={isDirty}
+        isSaving={isSaving}
+        savedAt={savedAt}
+        dateFormat={dateFormat}
+        statusKind={statusKind}
+        statusText={statusText}
+      />
+    </View>
+  );
+}
 
+function ActionBar({ onSave, onReset, onExport, onImport }: ActionBarProps) {
   return (
     <View
       style={{
@@ -517,7 +538,7 @@ function ActionBar({
     >
       <View style={{ gap: 8, flexGrow: 1, flexShrink: 1, flexBasis: 420 }}>
         <Text style={{ fontWeight: 600 }}>
-          {isDirty ? t('Unsaved changes') : t('Saved settings')}
+          <Trans>Settings storage</Trans>
         </Text>
         <Text style={{ color: theme.pageTextSubdued, lineHeight: 1.45 }}>
           <Trans>
@@ -525,14 +546,6 @@ function ActionBar({
             sync storage will be added in a later task.
           </Trans>
         </Text>
-        <SaveIndicator
-          isDirty={isDirty}
-          isSaving={isSaving}
-          savedAt={savedAt}
-          dateFormat={dateFormat}
-          statusKind={statusKind}
-          statusText={statusText}
-        />
       </View>
 
       <View
@@ -609,6 +622,7 @@ function SaveIndicator({
 
   return (
     <View
+      data-testid="flow-settings-save-indicator"
       style={{
         ...savedIndicatorStyle,
         animationName: savedPulseAnimation,
@@ -2497,6 +2511,17 @@ const savedIndicatorStyle: CSSProperties = {
   gap: 6,
   color: theme.noticeTextLight,
   lineHeight: 1.4,
+};
+
+const stickyHeaderStyle: CSSProperties = {
+  position: 'sticky',
+  top: 0,
+  zIndex: 20,
+  backgroundColor: theme.pageBackground,
+  padding: '10px 20px 12px',
+  gap: 6,
+  borderBottom: `1px solid ${theme.tableBorder}`,
+  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)',
 };
 
 const actionBarStyle: CSSProperties = {
