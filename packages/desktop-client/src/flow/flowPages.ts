@@ -5,6 +5,7 @@ import {
   SvgCalendar,
   SvgChartBar,
   SvgCheckmarkOutline,
+  SvgCog,
   SvgCreditCard,
   SvgDashboard,
   SvgFlag,
@@ -146,6 +147,16 @@ export function getFlowPages(t: TFunction): FlowPage[] {
       ),
       sidebarGroup: 'more',
       Icon: SvgCalendar,
+    },
+    {
+      id: 'flow-settings',
+      path: '/flow-settings',
+      title: t('Flow Settings'),
+      description: t(
+        'This page configures global Flow household rules and planning assumptions for future Flow modules.',
+      ),
+      sidebarGroup: 'more',
+      Icon: SvgCog,
     },
   ];
 }

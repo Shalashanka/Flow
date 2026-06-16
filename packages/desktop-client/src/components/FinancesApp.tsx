@@ -15,6 +15,7 @@ import { Permissions } from '#auth/types';
 import { CashflowPage } from '#flow/CashflowPage';
 import { getFlowPages } from '#flow/flowPages';
 import { FlowPlaceholderPage } from '#flow/FlowPlaceholderPage';
+import { FlowSettingsPage } from '#flow/FlowSettingsPage';
 import { useAccounts } from '#hooks/useAccounts';
 import { useGlobalPref } from '#hooks/useGlobalPref';
 import { useLocalPref } from '#hooks/useLocalPref';
@@ -338,6 +339,8 @@ export function FinancesApp() {
                       element={
                         page.id === 'cashflow' ? (
                           <CashflowPage />
+                        ) : page.id === 'flow-settings' ? (
+                          <FlowSettingsPage />
                         ) : (
                           <FlowPlaceholderPage page={page} />
                         )
