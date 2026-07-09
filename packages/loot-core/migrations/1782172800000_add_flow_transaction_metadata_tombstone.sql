@@ -1,0 +1,5 @@
+BEGIN TRANSACTION;
+
+ALTER TABLE flow_transaction_metadata ADD COLUMN tombstone INTEGER DEFAULT 0;
+
+COMMIT;
