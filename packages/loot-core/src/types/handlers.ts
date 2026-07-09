@@ -6,6 +6,7 @@ import type { BudgetFileHandlers } from '#server/budgetfiles/app';
 import type { DashboardHandlers } from '#server/dashboard/app';
 import type { EncryptionHandlers } from '#server/encryption/app';
 import type { FiltersHandlers } from '#server/filters/app';
+import type { FlowHandlers } from '#server/flow/app';
 import type { ForecastHandlers } from '#server/forecast/app';
 import type { NotesHandlers } from '#server/notes/app';
 import type { PayeesHandlers } from '#server/payees/app';
@@ -27,6 +28,7 @@ export type Handlers = {} & ServerHandlers &
   BudgetHandlers &
   DashboardHandlers &
   FiltersHandlers &
+  FlowHandlers &
   ForecastHandlers &
   NotesHandlers &
   PreferencesHandlers &

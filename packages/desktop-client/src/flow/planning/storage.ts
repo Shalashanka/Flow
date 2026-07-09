@@ -1,3 +1,5 @@
+import { send } from '@actual-app/core/platform/client/connection';
+
 import {
   createCashflowSettings,
   createDefaultFlowSettings,
@@ -29,40 +31,115 @@ import {
 
 export const FLOW_SETTINGS_STORAGE_KEY = 'flow.settings.v1';
 
+const DATABASE_STORAGE_FAILURE_MESSAGE =
+  'Database storage failed. Flow Settings are temporarily using browser local backup.';
+const DATABASE_SAVE_FAILURE_MESSAGE =
+  'Database save failed. Export your JSON or retry.';
+
 type FlowForecastMethod = FlowVariableSpendingRule['forecastMethod'];
+
+export type FlowSettingsStorageMode =
+  | 'database'
+  | 'database-migrated'
+  | 'defaults'
+  | 'local-backup';
 
 export type FlowSettingsImportResult =
   | { ok: true; settings: FlowSettings }
   | { ok: false; error: string };
 
+export type FlowSettingsLoadResult = {
+  settings: FlowSettings;
+  mode: FlowSettingsStorageMode;
+  message?: string;
+};
+
+export type FlowSettingsSaveResult = {
+  settings: FlowSettings;
+  mode: 'database' | 'local-backup';
+  message?: string;
+};
+
+type FlowSettingsRow = {
+  id: string;
+  version: number | null;
+  data: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export async function getFlowSettings(): Promise<FlowSettings> {
-  const storedValue = getStorage()?.getItem(FLOW_SETTINGS_STORAGE_KEY);
+  return (await loadFlowSettings()).settings;
+}
 
-  if (!storedValue) {
-    return createDefaultFlowSettings();
+export async function loadFlowSettings(): Promise<FlowSettingsLoadResult> {
+  try {
+    const { row } = await send('flow/settings-get');
+
+    if (row?.data) {
+      return {
+        settings: parseDatabaseSettings(row),
+        mode: 'database',
+      };
+    }
+
+    const localSettings = getLocalBackupSettings();
+
+    if (localSettings) {
+      const saved = await saveFlowSettings(localSettings);
+
+      return {
+        settings: saved.settings,
+        mode: saved.mode === 'database' ? 'database-migrated' : 'local-backup',
+        message:
+          saved.mode === 'database'
+            ? 'Existing browser Flow Settings were migrated into this budget database.'
+            : saved.message,
+      };
+    }
+
+    return {
+      settings: createDefaultFlowSettings(),
+      mode: 'defaults',
+    };
+  } catch {
+    return loadFromLocalBackup();
   }
-
-  const parsed = parseFlowSettingsJson(storedValue);
-  return parsed.ok ? parsed.settings : createDefaultFlowSettings();
 }
 
 export async function saveFlowSettings(
   settings: FlowSettings,
-): Promise<FlowSettings> {
+): Promise<FlowSettingsSaveResult> {
   const settingsToSave = {
     ...settings,
     updatedAt: new Date().toISOString(),
   };
 
-  getStorage()?.setItem(
-    FLOW_SETTINGS_STORAGE_KEY,
-    JSON.stringify(settingsToSave),
-  );
+  try {
+    const { row } = await send('flow/settings-save', {
+      data: exportFlowSettings(settingsToSave),
+      version: settingsToSave.version,
+    });
 
-  return settingsToSave;
+    return {
+      settings: row?.data ? parseDatabaseSettings(row) : settingsToSave,
+      mode: 'database',
+    };
+  } catch {
+    getStorage()?.setItem(
+      FLOW_SETTINGS_STORAGE_KEY,
+      exportFlowSettings(settingsToSave),
+    );
+
+    return {
+      settings: settingsToSave,
+      mode: 'local-backup',
+      message: DATABASE_SAVE_FAILURE_MESSAGE,
+    };
+  }
 }
 
-export async function resetFlowSettings(): Promise<FlowSettings> {
+export async function resetFlowSettings(): Promise<FlowSettingsSaveResult> {
   const settings = createDefaultFlowSettings();
   return saveFlowSettings(settings);
 }
@@ -131,6 +208,42 @@ function normalizeFlowSettings(value: unknown): FlowSettings | null {
     scenarios: withFallback(scenarios, defaults.scenarios),
     updatedAt: getString(value, 'updatedAt') ?? defaults.updatedAt,
   };
+}
+
+function parseDatabaseSettings(row: FlowSettingsRow): FlowSettings {
+  if (!row.data) {
+    throw new Error('Flow settings database row has no data.');
+  }
+
+  const parsed = parseFlowSettingsJson(row.data);
+
+  if (parsed.ok === false) {
+    throw new Error(parsed.error);
+  }
+
+  return {
+    ...parsed.settings,
+    updatedAt: row.updated_at ?? parsed.settings.updatedAt,
+  };
+}
+
+function loadFromLocalBackup(): FlowSettingsLoadResult {
+  return {
+    settings: getLocalBackupSettings() ?? createDefaultFlowSettings(),
+    mode: 'local-backup',
+    message: DATABASE_STORAGE_FAILURE_MESSAGE,
+  };
+}
+
+function getLocalBackupSettings(): FlowSettings | null {
+  const storedValue = getStorage()?.getItem(FLOW_SETTINGS_STORAGE_KEY);
+
+  if (!storedValue) {
+    return null;
+  }
+
+  const parsed = parseFlowSettingsJson(storedValue);
+  return parsed.ok ? parsed.settings : null;
 }
 
 function normalizeHouseholdMember(value: unknown): FlowHouseholdMember | null {

@@ -35,11 +35,12 @@ import {
 } from './planning/defaults';
 import {
   exportFlowSettings,
-  getFlowSettings,
+  loadFlowSettings,
   parseFlowSettingsJson,
   resetFlowSettings,
   saveFlowSettings,
 } from './planning/storage';
+import type { FlowSettingsStorageMode } from './planning/storage';
 import type {
   FlowCashflowSettings,
   FlowFixedBill,
@@ -53,6 +54,7 @@ import type {
 
 type StatusState =
   | { kind: 'saved' | 'autosaved' | 'reset' | 'exported' | 'imported' }
+  | { kind: 'migrated' | 'storage-warning'; message: string }
   | { kind: 'error'; message: string };
 
 type TranslationFn = ReturnType<typeof useTranslation>['t'];
@@ -72,17 +74,42 @@ export function FlowSettingsPage() {
   const [isLoaded, setLoaded] = useState(false);
   const [isSaving, setSaving] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [storageMode, setStorageMode] =
+    useState<FlowSettingsStorageMode>('defaults');
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadSettings() {
       try {
-        const loadedSettings = await getFlowSettings();
+        const loadResult = await loadFlowSettings();
+        const loadedSettings = loadResult.settings;
         if (isMounted) {
           setSettings(loadedSettings);
           setJsonBuffer(exportFlowSettings(loadedSettings));
-          setLastSavedAt(loadedSettings.updatedAt);
+          setLastSavedAt(
+            loadResult.mode === 'defaults' ? null : loadedSettings.updatedAt,
+          );
+          setStorageMode(loadResult.mode);
+          if (loadResult.mode === 'database-migrated') {
+            setStatus({
+              kind: 'migrated',
+              message:
+                loadResult.message ??
+                t(
+                  'Existing browser Flow Settings were migrated into this budget database.',
+                ),
+            });
+          } else if (loadResult.mode === 'local-backup') {
+            setStatus({
+              kind: 'storage-warning',
+              message:
+                loadResult.message ??
+                t(
+                  'Database storage failed. Flow Settings are temporarily using browser local backup.',
+                ),
+            });
+          }
           setLoaded(true);
         }
       } catch (error) {
@@ -98,7 +125,7 @@ export function FlowSettingsPage() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [t]);
 
   const accountOptions = useMemo<SelectOption<string>[]>(
     () => [
@@ -158,15 +185,26 @@ export function FlowSettingsPage() {
       setSaving(true);
 
       void saveFlowSettings(settings)
-        .then(savedSettings => {
+        .then(saveResult => {
           if (isCancelled) {
             return;
           }
 
+          const savedSettings = saveResult.settings;
           setSettings(savedSettings);
           setJsonBuffer(exportFlowSettings(savedSettings));
           setDirty(false);
-          setStatus({ kind: 'autosaved' });
+          setStorageMode(saveResult.mode);
+          setStatus(
+            saveResult.mode === 'local-backup'
+              ? {
+                  kind: 'storage-warning',
+                  message:
+                    saveResult.message ??
+                    t('Database save failed. Export your JSON or retry.'),
+                }
+              : { kind: 'autosaved' },
+          );
           setLastSavedAt(savedSettings.updatedAt);
         })
         .catch(error => {
@@ -185,16 +223,27 @@ export function FlowSettingsPage() {
       isCancelled = true;
       clearTimeout(timeout);
     };
-  }, [isDirty, isLoaded, settings]);
+  }, [isDirty, isLoaded, settings, t]);
 
   async function handleSave() {
     try {
       setSaving(true);
-      const savedSettings = await saveFlowSettings(settings);
+      const saveResult = await saveFlowSettings(settings);
+      const savedSettings = saveResult.settings;
       setSettings(savedSettings);
       setJsonBuffer(exportFlowSettings(savedSettings));
       setDirty(false);
-      setStatus({ kind: 'saved' });
+      setStorageMode(saveResult.mode);
+      setStatus(
+        saveResult.mode === 'local-backup'
+          ? {
+              kind: 'storage-warning',
+              message:
+                saveResult.message ??
+                t('Database save failed. Export your JSON or retry.'),
+            }
+          : { kind: 'saved' },
+      );
       setLastSavedAt(savedSettings.updatedAt);
     } catch (error) {
       setStatus({ kind: 'error', message: getErrorMessage(error) });
@@ -206,11 +255,22 @@ export function FlowSettingsPage() {
   async function handleReset() {
     try {
       setSaving(true);
-      const defaultSettings = await resetFlowSettings();
+      const saveResult = await resetFlowSettings();
+      const defaultSettings = saveResult.settings;
       setSettings(defaultSettings);
       setJsonBuffer(exportFlowSettings(defaultSettings));
       setDirty(false);
-      setStatus({ kind: 'reset' });
+      setStorageMode(saveResult.mode);
+      setStatus(
+        saveResult.mode === 'local-backup'
+          ? {
+              kind: 'storage-warning',
+              message:
+                saveResult.message ??
+                t('Database save failed. Export your JSON or retry.'),
+            }
+          : { kind: 'reset' },
+      );
       setLastSavedAt(defaultSettings.updatedAt);
     } catch (error) {
       setStatus({ kind: 'error', message: getErrorMessage(error) });
@@ -229,11 +289,22 @@ export function FlowSettingsPage() {
 
     try {
       setSaving(true);
-      const savedSettings = await saveFlowSettings(parsed.settings);
+      const saveResult = await saveFlowSettings(parsed.settings);
+      const savedSettings = saveResult.settings;
       setSettings(savedSettings);
       setJsonBuffer(exportFlowSettings(savedSettings));
       setDirty(false);
-      setStatus({ kind: 'imported' });
+      setStorageMode(saveResult.mode);
+      setStatus(
+        saveResult.mode === 'local-backup'
+          ? {
+              kind: 'storage-warning',
+              message:
+                saveResult.message ??
+                t('Database save failed. Export your JSON or retry.'),
+            }
+          : { kind: 'imported' },
+      );
       setLastSavedAt(savedSettings.updatedAt);
     } catch (error) {
       setStatus({ kind: 'error', message: getErrorMessage(error) });
@@ -254,12 +325,13 @@ export function FlowSettingsPage() {
           title={t('Flow Settings')}
           isDirty={isDirty}
           isSaving={isSaving}
-          savedAt={lastSavedAt ?? settings.updatedAt}
+          savedAt={lastSavedAt}
           dateFormat={dateFormat}
           statusKind={status?.kind}
           statusText={statusText}
         />
       }
+      style={{ flex: 'none', minHeight: '100%' }}
     >
       <View
         style={{
@@ -293,6 +365,7 @@ export function FlowSettingsPage() {
           onReset={handleReset}
           onExport={handleExport}
           onImport={handleImport}
+          storageMode={storageMode}
         />
 
         <HouseholdSection
@@ -488,6 +561,7 @@ type ActionBarProps = {
   onReset: () => void;
   onExport: () => void;
   onImport: () => void;
+  storageMode: FlowSettingsStorageMode;
 };
 
 type FlowSettingsHeaderProps = {
@@ -524,7 +598,15 @@ function FlowSettingsHeader({
   );
 }
 
-function ActionBar({ onSave, onReset, onExport, onImport }: ActionBarProps) {
+function ActionBar({
+  onSave,
+  onReset,
+  onExport,
+  onImport,
+  storageMode,
+}: ActionBarProps) {
+  const isLocalBackup = storageMode === 'local-backup';
+
   return (
     <View
       style={{
@@ -540,11 +622,23 @@ function ActionBar({ onSave, onReset, onExport, onImport }: ActionBarProps) {
         <Text style={{ fontWeight: 600 }}>
           <Trans>Settings storage</Trans>
         </Text>
-        <Text style={{ color: theme.pageTextSubdued, lineHeight: 1.45 }}>
-          <Trans>
-            Flow Settings is currently stored locally on this browser. Shared
-            sync storage will be added in a later task.
-          </Trans>
+        <Text
+          style={{
+            color: isLocalBackup ? theme.warningText : theme.pageTextSubdued,
+            lineHeight: 1.45,
+          }}
+        >
+          {isLocalBackup ? (
+            <Trans>
+              Database storage failed. Flow Settings are temporarily using
+              browser local backup.
+            </Trans>
+          ) : (
+            <Trans>
+              Flow Settings are saved in this budget database. Cross-device sync
+              support will be verified in a later task.
+            </Trans>
+          )}
         </Text>
       </View>
 
@@ -596,9 +690,14 @@ function SaveIndicator({
   const { t } = useTranslation();
   const savedAtText = formatTimestamp(savedAt, dateFormat);
 
-  if (statusKind === 'error') {
+  if (statusKind === 'error' || statusKind === 'storage-warning') {
     return (
-      <Text style={{ color: theme.errorText, lineHeight: 1.4 }}>
+      <Text
+        style={{
+          color: statusKind === 'error' ? theme.errorText : theme.warningText,
+          lineHeight: 1.4,
+        }}
+      >
         {statusText}
       </Text>
     );
@@ -620,6 +719,17 @@ function SaveIndicator({
     );
   }
 
+  if (!savedAt) {
+    return (
+      <Text style={{ color: theme.pageTextSubdued, lineHeight: 1.4 }}>
+        <Trans>
+          Defaults loaded. Save or edit to store Flow Settings in this budget
+          database.
+        </Trans>
+      </Text>
+    );
+  }
+
   return (
     <View
       data-testid="flow-settings-save-indicator"
@@ -633,8 +743,12 @@ function SaveIndicator({
       <SvgCheckCircle1 width={14} height={14} />
       <Text style={{ color: theme.noticeTextLight }}>
         {statusKind === 'autosaved'
-          ? t('Autosaved at {{savedAt}}', { savedAt: savedAtText })
-          : t('Saved at {{savedAt}}', { savedAt: savedAtText })}
+          ? t('Autosaved to budget database at {{savedAt}}', {
+              savedAt: savedAtText,
+            })
+          : t('Saved to budget database at {{savedAt}}', {
+              savedAt: savedAtText,
+            })}
       </Text>
       {statusText &&
         !['saved', 'autosaved'].includes(statusKind ?? 'saved') && (
@@ -1836,6 +1950,7 @@ function JsonPanel({
     if (
       statusKind === 'exported' ||
       statusKind === 'imported' ||
+      statusKind === 'storage-warning' ||
       statusKind === 'error'
     ) {
       setOpen(true);
@@ -1846,7 +1961,7 @@ function JsonPanel({
     <Section
       title={t('JSON Import / Export')}
       description={t(
-        'Temporary local storage can be backed up or moved between browsers with this JSON.',
+        'Export or import the current Flow Settings JSON. Database storage remains the source of truth when saves succeed.',
       )}
     >
       <details
@@ -2470,15 +2585,19 @@ function getErrorMessage(error: unknown): string {
 function getStatusText(status: StatusState, t: TranslationFn): string {
   switch (status.kind) {
     case 'saved':
-      return t('Flow settings saved.');
+      return t('Flow settings saved to the budget database.');
     case 'autosaved':
-      return t('Flow settings autosaved.');
+      return t('Flow settings autosaved to the budget database.');
     case 'reset':
-      return t('Flow settings reset to defaults.');
+      return t('Flow settings reset to defaults and saved.');
     case 'exported':
       return t('Flow settings JSON is ready to copy or import.');
     case 'imported':
-      return t('Flow settings imported and saved.');
+      return t('Flow settings imported and saved to the budget database.');
+    case 'migrated':
+      return status.message;
+    case 'storage-warning':
+      return status.message;
     case 'error':
       return t('Flow settings error: {{message}}', {
         message: status.message,
@@ -2517,6 +2636,8 @@ const stickyHeaderStyle: CSSProperties = {
   position: 'sticky',
   top: 0,
   zIndex: 20,
+  flexShrink: 0,
+  minHeight: 'auto',
   backgroundColor: theme.pageBackground,
   padding: '10px 20px 12px',
   gap: 6,

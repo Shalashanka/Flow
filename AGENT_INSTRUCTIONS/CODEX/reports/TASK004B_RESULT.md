@@ -186,3 +186,45 @@ Screenshot artifact:
 
 - Section Save buttons currently commit the row presentation state and collapse the form. Persistence is handled by the page autosave or the existing manual Save button.
 - Tooltips explain current placeholder behavior where applicable, especially Scenarios, because the rule-based Scenario Builder still belongs in TASK005.
+
+---
+
+## Follow-up: Sticky Saved Status Header
+
+The Flow Settings page header and saved/autosaved timestamp were moved into a sticky header so they remain visible while scrolling through the long settings page.
+
+### Summary
+
+- The saved timestamp now appears directly below the `Flow Settings` page title.
+- The header is sticky while scrolling the settings content.
+- The page wrapper now avoids the fixed-height/flex shrink behavior that caused the sticky header to disappear near the bottom of the page.
+- Verified at the bottom scroll position that the sticky header remains visible.
+
+### Files Modified
+
+- `packages/desktop-client/src/flow/FlowSettingsPage.tsx`
+- `AGENT_INSTRUCTIONS/CODEX/reports/TASK004B_RESULT.md`
+
+### Browser Smoke Test
+
+Tested in Chromium through Playwright on `http://localhost:3001/flow-settings`.
+
+- Loaded the demo budget.
+- Opened `/flow-settings`.
+- Scrolled the actual settings scroll container to the bottom.
+- Confirmed `flow-settings-sticky-header` remained visible at the top of the viewport.
+- Confirmed the saved timestamp remained directly below the title.
+
+Screenshot artifact:
+
+- `AGENT_INSTRUCTIONS/CODEX/reports/task004b-sticky-header-bottom.png`
+
+### Commands Run
+
+- `node_modules\.bin\oxfmt.cmd --write packages\desktop-client\src\flow\FlowSettingsPage.tsx`
+- `node_modules\.bin\oxlint.cmd --type-aware packages\desktop-client\src\flow\FlowSettingsPage.tsx`
+
+### Command Results
+
+- Targeted format passed.
+- Targeted oxlint passed with 0 warnings and 0 errors.
