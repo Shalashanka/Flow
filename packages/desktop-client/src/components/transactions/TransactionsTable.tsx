@@ -102,6 +102,14 @@ import type {
   TableNavigator,
   TableProps,
 } from '#components/table';
+import type { FlowSettings } from '#flow/planning/types';
+import {
+  FlowTransactionCells,
+  FlowTransactionHeaderCells,
+  FlowTransactionPlaceholderCells,
+} from '#flow/transaction-metadata/FlowTransactionColumns';
+import type { FlowTransactionMetadataRecord } from '#flow/transaction-metadata/types';
+import { useFlowTransactionMetadata } from '#flow/transaction-metadata/useFlowTransactionMetadata';
 import {
   SchedulesProvider,
   useCachedSchedules,
@@ -321,6 +329,7 @@ const TransactionHeader = memo(
             id="balance"
           />
         )}
+        <FlowTransactionHeaderCells />
         {showCleared && (
           <HeaderCell
             value="✓"
@@ -896,6 +905,9 @@ type TransactionProps = {
   showSelection?: boolean;
   allowSplitTransaction?: boolean;
   showHiddenCategories?: boolean;
+  flowMetadataRecord?: FlowTransactionMetadataRecord;
+  flowSettings?: FlowSettings | null;
+  onFlowMetadataRecordChange?: (record: FlowTransactionMetadataRecord) => void;
   // Drag and drop props
   canDrag?: boolean;
   draggedDate?: string | null;
@@ -910,6 +922,10 @@ type TransactionProps = {
   onDrop?: OnDropCallback;
   index: number;
 };
+
+function ignoreFlowMetadataRecordChange() {
+  return undefined;
+}
 
 const Transaction = memo(function Transaction({
   allTransactions,
@@ -956,6 +972,9 @@ const Transaction = memo(function Transaction({
   showSelection,
   allowSplitTransaction,
   showHiddenCategories,
+  flowMetadataRecord,
+  flowSettings,
+  onFlowMetadataRecordChange,
   canDrag = false,
   draggedDate,
   draggedId,
@@ -1875,6 +1894,18 @@ const Transaction = memo(function Transaction({
           />
         )}
 
+        {isPreview || isTemporaryId(transaction.id) ? (
+          <FlowTransactionPlaceholderCells />
+        ) : (
+          <FlowTransactionCells
+            record={flowMetadataRecord}
+            settings={flowSettings ?? null}
+            onRecordChange={
+              onFlowMetadataRecordChange ?? ignoreFlowMetadataRecordChange
+            }
+          />
+        )}
+
         {showCleared && (
           <StatusCell
             /* Icon field for all transactions */
@@ -2424,6 +2455,23 @@ function TransactionTableInner({
         : props.transactions.filter(t => !t.reconciled),
     [props.transactions, props.showReconciled],
   );
+  const flowTransactionIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          transactionsToRender
+            .map(transaction => transaction.id)
+            .filter(id => id && !isPreviewId(id) && !isTemporaryId(id)),
+        ),
+      ),
+    [transactionsToRender],
+  );
+  const {
+    metadataByTransactionId: flowMetadataByTransactionId,
+    settings: flowSettings,
+    hasLoadError: hasFlowMetadataLoadError,
+    setMetadataRecord: setFlowMetadataRecord,
+  } = useFlowTransactionMetadata(flowTransactionIds);
 
   const renderRow: TableProps<TransactionEntity>['renderItem'] = ({
     item,
@@ -2558,6 +2606,9 @@ function TransactionTableInner({
         showSelection={showSelection}
         allowSplitTransaction={allowSplitTransaction}
         showHiddenCategories={showHiddenCategories}
+        flowMetadataRecord={flowMetadataByTransactionId.get(trans.id)}
+        flowSettings={flowSettings}
+        onFlowMetadataRecordChange={setFlowMetadataRecord}
         canDrag={props.canDrag}
         draggedId={props.draggedId}
         draggedParentId={props.draggedParentId}
@@ -2596,6 +2647,23 @@ function TransactionTableInner({
           field={props.sortField}
           showSelection={props.showSelection}
         />
+
+        {hasFlowMetadataLoadError && (
+          <View
+            style={{
+              padding: '4px 8px',
+              backgroundColor: theme.errorBackground,
+              borderBottomWidth: 1,
+              borderColor: theme.tableBorder,
+            }}
+          >
+            <Text style={{ color: theme.errorText }}>
+              <Trans>
+                Flow metadata could not be loaded for this transaction list.
+              </Trans>
+            </Text>
+          </View>
+        )}
 
         {props.isAdding && (
           <View
