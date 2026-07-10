@@ -1,6 +1,13 @@
 import { createApp } from '#server/app';
 import * as db from '#server/db';
 import { mutator } from '#server/mutators';
+import { batchMessages } from '#server/sync';
+import { isFlowSettlementStatus } from '#shared/flow-settlement';
+import type {
+  FlowSettlementItem,
+  FlowSettlementSnapshot,
+  FlowSettlementSummary,
+} from '#shared/flow-settlement';
 import { normalizeFlowTransactionMetadataData } from '#shared/flow-transaction-metadata';
 import type {
   FlowTransactionMetadataData,
@@ -43,6 +50,10 @@ type FlowTransactionMetadataGetManyRequest = {
   actualTransactionIds: string[];
 };
 
+type FlowTransactionMetadataGetBySettlementMonthRequest = {
+  settlementMonth: string;
+};
+
 type FlowTransactionMetadataSaveRequest = {
   actualTransactionId: string;
   data: FlowTransactionMetadataData;
@@ -52,13 +63,72 @@ type FlowTransactionMetadataDeleteResponse = {
   deleted: boolean;
 };
 
+type FlowSettlementsMonthRequest = {
+  month: string;
+};
+
+type FlowSettlementsSaveRequest = {
+  month: string;
+  settlements: FlowSettlementSummary[];
+  items: FlowSettlementItem[];
+};
+
+type FlowSettlementsSaveResponse = {
+  saved: boolean;
+};
+
+type FlowSettlementsDeleteResponse = {
+  deleted: boolean;
+};
+
+type FlowSettlementItemsResponse = {
+  items: FlowSettlementItem[];
+};
+
+type FlowSettlementRow = {
+  id: string;
+  month: string | null;
+  from_member_id: string | null;
+  to_member_id: string | null;
+  amount: number | null;
+  item_count: number | null;
+  status: string | null;
+  payment_transaction_id: string | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowSettlementItemRow = {
+  id: string;
+  settlement_id: string | null;
+  month: string | null;
+  actual_transaction_id: string | null;
+  owed_by_member_id: string | null;
+  owed_to_member_id: string | null;
+  amount: number | null;
+  source_amount: number | null;
+  split_method: string | null;
+  settlement_status: string | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export type FlowHandlers = {
   'flow/settings-get': typeof getFlowSettingsRow;
   'flow/settings-save': typeof saveFlowSettingsRow;
   'flow/transaction-metadata-get': typeof getTransactionMetadata;
   'flow/transaction-metadata-get-many': typeof getTransactionMetadataMany;
+  'flow/transaction-metadata-get-by-settlement-month': typeof getTransactionMetadataBySettlementMonth;
   'flow/transaction-metadata-save': typeof saveTransactionMetadata;
   'flow/transaction-metadata-delete': typeof deleteTransactionMetadata;
+  'flow/settlements-get': typeof getSettlements;
+  'flow/settlements-save': typeof saveSettlements;
+  'flow/settlements-delete': typeof deleteSettlements;
+  'flow/settlement-items-get': typeof getSettlementItems;
 };
 
 export const app = createApp<FlowHandlers>();
@@ -67,11 +137,19 @@ app.method('flow/settings-get', getFlowSettingsRow);
 app.method('flow/settings-save', mutator(saveFlowSettingsRow));
 app.method('flow/transaction-metadata-get', getTransactionMetadata);
 app.method('flow/transaction-metadata-get-many', getTransactionMetadataMany);
+app.method(
+  'flow/transaction-metadata-get-by-settlement-month',
+  getTransactionMetadataBySettlementMonth,
+);
 app.method('flow/transaction-metadata-save', mutator(saveTransactionMetadata));
 app.method(
   'flow/transaction-metadata-delete',
   mutator(deleteTransactionMetadata),
 );
+app.method('flow/settlements-get', getSettlements);
+app.method('flow/settlements-save', mutator(saveSettlements));
+app.method('flow/settlements-delete', mutator(deleteSettlements));
+app.method('flow/settlement-items-get', getSettlementItems);
 
 async function getFlowSettingsRow(): Promise<FlowSettingsResponse> {
   return {
@@ -164,6 +242,26 @@ async function getTransactionMetadataMany({
   return rows
     .map(rowToTransactionMetadataRecord)
     .filter(isTransactionMetadataRecord);
+}
+
+async function getTransactionMetadataBySettlementMonth({
+  settlementMonth,
+}: FlowTransactionMetadataGetBySettlementMonthRequest): Promise<
+  FlowTransactionMetadataRecord[]
+> {
+  const month = requireMonth(settlementMonth);
+  const rows = await db.all<FlowTransactionMetadataRow>(
+    `
+      SELECT id, actual_transaction_id, data, created_at, updated_at, tombstone
+      FROM flow_transaction_metadata
+      WHERE COALESCE(tombstone, 0) = 0
+    `,
+  );
+
+  return rows
+    .map(rowToTransactionMetadataRecord)
+    .filter(isTransactionMetadataRecord)
+    .filter(record => record.data.settlementMonth === month);
 }
 
 async function saveTransactionMetadata({
@@ -289,4 +387,399 @@ function isTransactionMetadataRecord(
   record: FlowTransactionMetadataRecord | null,
 ): record is FlowTransactionMetadataRecord {
   return record !== null;
+}
+
+async function getSettlements({
+  month,
+}: FlowSettlementsMonthRequest): Promise<FlowSettlementSnapshot> {
+  const normalizedMonth = requireMonth(month);
+
+  const [settlementRows, itemRows] = await Promise.all([
+    selectSettlementRows(normalizedMonth),
+    selectSettlementItemRows(normalizedMonth),
+  ]);
+
+  return {
+    settlements: settlementRows
+      .map(rowToSettlementSummary)
+      .filter(isSettlementSummary),
+    items: itemRows.map(rowToSettlementItem).filter(isSettlementItem),
+  };
+}
+
+async function getSettlementItems({
+  month,
+}: FlowSettlementsMonthRequest): Promise<FlowSettlementItemsResponse> {
+  const itemRows = await selectSettlementItemRows(requireMonth(month));
+
+  return {
+    items: itemRows.map(rowToSettlementItem).filter(isSettlementItem),
+  };
+}
+
+async function saveSettlements({
+  month,
+  settlements,
+  items,
+}: FlowSettlementsSaveRequest): Promise<FlowSettlementsSaveResponse> {
+  const normalizedMonth = requireMonth(month);
+  const now = new Date().toISOString();
+  const normalizedSettlements = (settlements ?? [])
+    .map(settlement => normalizeSettlementSummary(normalizedMonth, settlement))
+    .filter(isSettlementSummary);
+  const normalizedItems = (items ?? [])
+    .map(item => normalizeSettlementItem(item))
+    .filter(isSettlementItem);
+
+  await batchMessages(async () => {
+    await tombstoneSettlementsForMonth(normalizedMonth, now);
+
+    for (const settlement of normalizedSettlements) {
+      await upsertSettlementRow(settlement, now);
+    }
+
+    for (const item of normalizedItems) {
+      await upsertSettlementItemRow(normalizedMonth, item, now);
+    }
+  });
+
+  return { saved: true };
+}
+
+async function deleteSettlements({
+  month,
+}: FlowSettlementsMonthRequest): Promise<FlowSettlementsDeleteResponse> {
+  await tombstoneSettlementsForMonth(
+    requireMonth(month),
+    new Date().toISOString(),
+  );
+  return { deleted: true };
+}
+
+async function selectSettlementRows(
+  month: string,
+): Promise<FlowSettlementRow[]> {
+  return db.all<FlowSettlementRow>(
+    `
+      SELECT
+        id,
+        month,
+        from_member_id,
+        to_member_id,
+        amount,
+        item_count,
+        status,
+        payment_transaction_id,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_settlements
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+      ORDER BY from_member_id, to_member_id
+    `,
+    [month],
+  );
+}
+
+async function selectSettlementItemRows(
+  month: string,
+): Promise<FlowSettlementItemRow[]> {
+  return db.all<FlowSettlementItemRow>(
+    `
+      SELECT
+        id,
+        settlement_id,
+        month,
+        actual_transaction_id,
+        owed_by_member_id,
+        owed_to_member_id,
+        amount,
+        source_amount,
+        split_method,
+        settlement_status,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_settlement_items
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+      ORDER BY actual_transaction_id, owed_by_member_id, owed_to_member_id
+    `,
+    [month],
+  );
+}
+
+async function tombstoneSettlementsForMonth(
+  month: string,
+  updatedAt: string,
+): Promise<void> {
+  const settlementRows = await db.all<Pick<FlowSettlementRow, 'id'>>(
+    `
+      SELECT id
+      FROM flow_settlements
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+  const itemRows = await db.all<Pick<FlowSettlementItemRow, 'id'>>(
+    `
+      SELECT id
+      FROM flow_settlement_items
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+
+  for (const row of settlementRows) {
+    await db.update('flow_settlements', {
+      id: row.id,
+      tombstone: 1,
+      updated_at: updatedAt,
+    });
+  }
+
+  for (const row of itemRows) {
+    await db.update('flow_settlement_items', {
+      id: row.id,
+      tombstone: 1,
+      updated_at: updatedAt,
+    });
+  }
+}
+
+async function upsertSettlementRow(
+  settlement: FlowSettlementSummary,
+  now: string,
+): Promise<void> {
+  const id = settlementIdFor(
+    settlement.month,
+    settlement.fromMemberId,
+    settlement.toMemberId,
+  );
+  const existingRow = await db.first<Pick<FlowSettlementRow, 'id'>>(
+    'SELECT id FROM flow_settlements WHERE id = ?',
+    [id],
+  );
+  const row = {
+    id,
+    month: settlement.month,
+    from_member_id: settlement.fromMemberId,
+    to_member_id: settlement.toMemberId,
+    amount: settlement.amount,
+    item_count: settlement.itemCount,
+    status: settlement.status,
+    updated_at: now,
+    tombstone: 0,
+  };
+
+  if (existingRow) {
+    await db.update('flow_settlements', row);
+  } else {
+    await db.insert('flow_settlements', {
+      ...row,
+      created_at: now,
+    });
+  }
+}
+
+async function upsertSettlementItemRow(
+  month: string,
+  item: FlowSettlementItem,
+  now: string,
+): Promise<void> {
+  const existingRow = await db.first<Pick<FlowSettlementItemRow, 'id'>>(
+    'SELECT id FROM flow_settlement_items WHERE id = ?',
+    [item.id],
+  );
+  const row = {
+    id: item.id,
+    settlement_id: settlementIdFor(
+      month,
+      item.owedByMemberId,
+      item.owedToMemberId,
+    ),
+    month,
+    actual_transaction_id: item.actualTransactionId,
+    owed_by_member_id: item.owedByMemberId,
+    owed_to_member_id: item.owedToMemberId,
+    amount: item.amount,
+    source_amount: item.sourceAmount,
+    split_method: item.splitMethod,
+    settlement_status: item.settlementStatus ?? null,
+    notes: item.notes ?? null,
+    updated_at: now,
+    tombstone: 0,
+  };
+
+  if (existingRow) {
+    await db.update('flow_settlement_items', row);
+  } else {
+    await db.insert('flow_settlement_items', {
+      ...row,
+      created_at: now,
+    });
+  }
+}
+
+function rowToSettlementSummary(
+  row: FlowSettlementRow,
+): FlowSettlementSummary | null {
+  const month = getString(row.month);
+  const fromMemberId = getString(row.from_member_id);
+  const toMemberId = getString(row.to_member_id);
+  const amount = getInteger(row.amount);
+
+  if (!month || !fromMemberId || !toMemberId || amount == null) {
+    return null;
+  }
+
+  const status = row.status ?? undefined;
+
+  return {
+    month,
+    fromMemberId,
+    toMemberId,
+    amount,
+    itemCount: getInteger(row.item_count) ?? 0,
+    status: isFlowSettlementStatus(status) ? status : 'open',
+  };
+}
+
+function rowToSettlementItem(
+  row: FlowSettlementItemRow,
+): FlowSettlementItem | null {
+  const id = getString(row.id);
+  const actualTransactionId = getString(row.actual_transaction_id);
+  const owedByMemberId = getString(row.owed_by_member_id);
+  const owedToMemberId = getString(row.owed_to_member_id);
+  const amount = getInteger(row.amount);
+  const sourceAmount = getInteger(row.source_amount);
+
+  if (
+    !id ||
+    !actualTransactionId ||
+    !owedByMemberId ||
+    !owedToMemberId ||
+    amount == null ||
+    sourceAmount == null
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    actualTransactionId,
+    owedByMemberId,
+    owedToMemberId,
+    amount,
+    sourceAmount,
+    splitMethod: getString(row.split_method) ?? 'unknown',
+    settlementStatus: getString(row.settlement_status),
+    notes: getString(row.notes),
+  };
+}
+
+function normalizeSettlementSummary(
+  month: string,
+  settlement: FlowSettlementSummary,
+): FlowSettlementSummary | null {
+  const fromMemberId = getString(settlement?.fromMemberId);
+  const toMemberId = getString(settlement?.toMemberId);
+  const amount = getInteger(settlement?.amount);
+
+  if (!fromMemberId || !toMemberId || amount == null || amount <= 0) {
+    return null;
+  }
+
+  return {
+    month,
+    fromMemberId,
+    toMemberId,
+    amount,
+    itemCount: Math.max(0, getInteger(settlement?.itemCount) ?? 0),
+    status: isFlowSettlementStatus(settlement?.status)
+      ? settlement.status
+      : 'open',
+  };
+}
+
+function normalizeSettlementItem(
+  item: FlowSettlementItem,
+): FlowSettlementItem | null {
+  const id = getString(item?.id);
+  const actualTransactionId = getString(item?.actualTransactionId);
+  const owedByMemberId = getString(item?.owedByMemberId);
+  const owedToMemberId = getString(item?.owedToMemberId);
+  const amount = getInteger(item?.amount);
+  const sourceAmount = getInteger(item?.sourceAmount);
+  const splitMethod = getString(item?.splitMethod);
+
+  if (
+    !id ||
+    !actualTransactionId ||
+    !owedByMemberId ||
+    !owedToMemberId ||
+    amount == null ||
+    amount <= 0 ||
+    sourceAmount == null ||
+    sourceAmount < 0 ||
+    !splitMethod
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    actualTransactionId,
+    owedByMemberId,
+    owedToMemberId,
+    amount,
+    sourceAmount,
+    splitMethod,
+    notes: getString(item.notes),
+    settlementStatus: getString(item.settlementStatus),
+  };
+}
+
+function settlementIdFor(
+  month: string,
+  fromMemberId: string,
+  toMemberId: string,
+) {
+  return `flow-settlement:${month}:${fromMemberId}:${toMemberId}`;
+}
+
+function requireMonth(month: string): string {
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error('Settlement month must use YYYY-MM format.');
+  }
+
+  return month;
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+function getInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value)
+    ? value
+    : undefined;
+}
+
+function isSettlementSummary(
+  settlement: FlowSettlementSummary | null,
+): settlement is FlowSettlementSummary {
+  return settlement !== null;
+}
+
+function isSettlementItem(
+  item: FlowSettlementItem | null,
+): item is FlowSettlementItem {
+  return item !== null;
 }

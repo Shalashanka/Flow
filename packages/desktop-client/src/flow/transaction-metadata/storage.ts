@@ -70,6 +70,21 @@ export async function getFlowTransactionMetadataMany(
   }
 }
 
+export async function getFlowTransactionMetadataBySettlementMonth(
+  settlementMonth: string,
+): Promise<FlowTransactionMetadataRecord[]> {
+  try {
+    const records = await send(
+      'flow/transaction-metadata-get-by-settlement-month',
+      { settlementMonth },
+    );
+
+    return records.map(normalizeRecord);
+  } catch {
+    return [];
+  }
+}
+
 export async function saveFlowTransactionMetadata(
   actualTransactionId: string,
   data: FlowTransactionMetadataData,
@@ -90,13 +105,15 @@ export async function deleteFlowTransactionMetadata(
 
 async function getDefaultMetadataData(): Promise<FlowTransactionMetadataData> {
   try {
-    return createDefaultDataFromSettings(await getFlowSettings());
+    return createDefaultFlowTransactionMetadataDataFromSettings(
+      await getFlowSettings(),
+    );
   } catch {
     return createDefaultFlowTransactionMetadataData();
   }
 }
 
-function createDefaultDataFromSettings(
+export function createDefaultFlowTransactionMetadataDataFromSettings(
   settings: FlowSettings,
 ): FlowTransactionMetadataData {
   const splitDefaults = getSplitDefaults(

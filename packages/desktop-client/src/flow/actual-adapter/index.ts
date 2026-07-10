@@ -101,6 +101,45 @@ export async function getFlowTransactions(
     .filter(transaction => transaction !== null);
 }
 
+export async function getFlowTransactionsByIds(
+  transactionIds: string[],
+): Promise<FlowTransaction[]> {
+  const ids = [...new Set(transactionIds.filter(Boolean))];
+
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const response: unknown = await aqlQuery(
+    q('transactions')
+      .filter({
+        id: { $oneof: ids },
+        'account.offbudget': false,
+        'payee.transfer_acct': null,
+      })
+      .orderBy([{ date: 'desc' }, { sort_order: 'desc' }])
+      .options({ splits: 'grouped' })
+      .select([
+        'id',
+        'date',
+        'account',
+        'category',
+        'payee',
+        'amount',
+        'notes',
+        'cleared',
+        'reconciled',
+        { accountName: 'account.name' },
+        { categoryName: 'category.name' },
+        { payeeName: 'payee.name' },
+      ]),
+  );
+
+  return getDataRows(response)
+    .map(normalizeTransaction)
+    .filter(transaction => transaction !== null);
+}
+
 export async function getCurrentMonthCashflowSummary(): Promise<FlowCashflowSummary> {
   const data = await getCurrentMonthCashflowData();
   return data.summary;

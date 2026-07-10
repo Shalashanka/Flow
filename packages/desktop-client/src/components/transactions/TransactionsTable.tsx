@@ -104,11 +104,15 @@ import type {
 } from '#components/table';
 import type { FlowSettings } from '#flow/planning/types';
 import {
+  createDefaultFlowTransactionRecord,
   FlowTransactionCells,
   FlowTransactionHeaderCells,
   FlowTransactionPlaceholderCells,
 } from '#flow/transaction-metadata/FlowTransactionColumns';
-import type { FlowTransactionMetadataRecord } from '#flow/transaction-metadata/types';
+import type {
+  FlowTransactionMetadataData,
+  FlowTransactionMetadataRecord,
+} from '#flow/transaction-metadata/types';
 import { useFlowTransactionMetadata } from '#flow/transaction-metadata/useFlowTransactionMetadata';
 import {
   SchedulesProvider,
@@ -908,6 +912,10 @@ type TransactionProps = {
   flowMetadataRecord?: FlowTransactionMetadataRecord;
   flowSettings?: FlowSettings | null;
   onFlowMetadataRecordChange?: (record: FlowTransactionMetadataRecord) => void;
+  onFlowMetadataDataChange?: (
+    record: FlowTransactionMetadataRecord,
+    data: FlowTransactionMetadataData,
+  ) => Promise<FlowTransactionMetadataRecord> | FlowTransactionMetadataRecord;
   // Drag and drop props
   canDrag?: boolean;
   draggedDate?: string | null;
@@ -975,6 +983,7 @@ const Transaction = memo(function Transaction({
   flowMetadataRecord,
   flowSettings,
   onFlowMetadataRecordChange,
+  onFlowMetadataDataChange,
   canDrag = false,
   draggedDate,
   draggedId,
@@ -1894,14 +1903,29 @@ const Transaction = memo(function Transaction({
           />
         )}
 
-        {isPreview || isTemporaryId(transaction.id) ? (
+        {isPreview ? (
           <FlowTransactionPlaceholderCells />
         ) : (
           <FlowTransactionCells
-            record={flowMetadataRecord}
+            record={
+              flowMetadataRecord ??
+              (isTemporaryId(transaction.id)
+                ? createDefaultFlowTransactionRecord(
+                    transaction.id,
+                    flowSettings ?? null,
+                  )
+                : undefined)
+            }
             settings={flowSettings ?? null}
             onRecordChange={
               onFlowMetadataRecordChange ?? ignoreFlowMetadataRecordChange
+            }
+            focusedField={focusedField}
+            onEdit={field => onEdit(id, field)}
+            onUpdateData={
+              isTemporaryId(transaction.id)
+                ? onFlowMetadataDataChange
+                : undefined
             }
           />
         )}
@@ -2160,6 +2184,16 @@ type NewTransactionProps = {
     [id: TransactionEntity['id']]: AccountEntity | null;
   };
   showHiddenCategories?: boolean;
+  flowMetadataRecordsByTransactionId: Map<
+    string,
+    FlowTransactionMetadataRecord
+  >;
+  flowSettings: FlowSettings | null;
+  onFlowMetadataRecordChange: (record: FlowTransactionMetadataRecord) => void;
+  onFlowMetadataDataChange: (
+    record: FlowTransactionMetadataRecord,
+    data: FlowTransactionMetadataData,
+  ) => FlowTransactionMetadataRecord;
 };
 function NewTransaction({
   transactions,
@@ -2191,6 +2225,10 @@ function NewTransaction({
   onNotesTagClick,
   balance,
   showHiddenCategories,
+  flowMetadataRecordsByTransactionId,
+  flowSettings,
+  onFlowMetadataRecordChange,
+  onFlowMetadataDataChange,
 }: NewTransactionProps) {
   const error = transactions[0].error;
   const isDeposit = transactions[0].amount > 0;
@@ -2262,6 +2300,12 @@ function NewTransaction({
           showSelection
           allowSplitTransaction
           showHiddenCategories={showHiddenCategories}
+          flowMetadataRecord={flowMetadataRecordsByTransactionId.get(
+            transaction.id,
+          )}
+          flowSettings={flowSettings}
+          onFlowMetadataRecordChange={onFlowMetadataRecordChange}
+          onFlowMetadataDataChange={onFlowMetadataDataChange}
         />
       ))}
       <View
@@ -2321,6 +2365,13 @@ type TransactionTableInnerProps = {
     [id: TransactionEntity['id']]: AccountEntity | null;
   };
   newTransactions: TransactionEntity[];
+  pendingFlowMetadataByTransactionId: Map<
+    string,
+    FlowTransactionMetadataRecord
+  >;
+  onPendingFlowMetadataRecordChange: (
+    record: FlowTransactionMetadataRecord,
+  ) => void;
 
   transactions: TransactionEntity[];
   loadMoreTransactions: () => void;
@@ -2349,7 +2400,10 @@ type TransactionTableInnerProps = {
   onSplit: (id: TransactionEntity['id']) => void;
   onAddSplit: (id: TransactionEntity['id']) => void;
   onCloseAddTransaction: () => void;
-  onAdd: (transactions: TransactionEntity[]) => void;
+  onAdd: (
+    transactions: TransactionEntity[],
+    flowMetadataByTransactionId?: Map<string, FlowTransactionMetadataData>,
+  ) => void;
   onCreatePayee: (name: string) => Promise<null | PayeeEntity['id']>;
   style?: CSSProperties;
   onNavigateToTransferAccount: (id: AccountEntity['id']) => void;
@@ -2702,6 +2756,18 @@ function TransactionTableInner({
               onNotesTagClick={onNotesTagClick}
               onDistributeRemainder={props.onDistributeRemainder}
               showHiddenCategories={showHiddenCategories}
+              flowMetadataRecordsByTransactionId={
+                props.pendingFlowMetadataByTransactionId
+              }
+              flowSettings={flowSettings}
+              onFlowMetadataRecordChange={
+                props.onPendingFlowMetadataRecordChange
+              }
+              onFlowMetadataDataChange={(record, data) => ({
+                ...record,
+                data,
+                exists: true,
+              })}
             />
           </View>
         )}
@@ -2781,7 +2847,10 @@ export type TransactionTableProps = {
   onSplit: (id: TransactionEntity['id']) => TransactionEntity['id'];
   onAddSplit: (id: TransactionEntity['id']) => TransactionEntity['id'];
   onCloseAddTransaction: () => void;
-  onAdd: (transactions: TransactionEntity[]) => void;
+  onAdd: (
+    transactions: TransactionEntity[],
+    flowMetadataByTransactionId?: Map<string, FlowTransactionMetadataData>,
+  ) => void;
   onCreatePayee: (name: string) => Promise<null | PayeeEntity['id']>;
   style?: CSSProperties;
   onNavigateToTransferAccount: (id: AccountEntity['id']) => void;
@@ -2822,6 +2891,10 @@ export const TransactionTable = forwardRef(
     const [newTransactions, setNewTransactions] = useState<TransactionEntity[]>(
       [],
     );
+    const [
+      pendingFlowMetadataByTransactionId,
+      setPendingFlowMetadataByTransactionId,
+    ] = useState(() => new Map<string, FlowTransactionMetadataRecord>());
     const [prevIsAdding, setPrevIsAdding] = useState(false);
     const splitsExpanded = useSplitsExpanded();
     const splitsExpandedDispatch = splitsExpanded.dispatch;
@@ -2992,6 +3065,16 @@ export const TransactionTable = forwardRef(
     const afterSaveFunc = useRef<null | (() => void)>(null);
     const [_, forceRerender] = useState({});
     const selectedItems = useSelectedItems();
+    const onPendingFlowMetadataRecordChange = useCallback(
+      (record: FlowTransactionMetadataRecord) => {
+        setPendingFlowMetadataByTransactionId(current => {
+          const next = new Map(current);
+          next.set(record.actualTransactionId, record);
+          return next;
+        });
+      },
+      [],
+    );
 
     latestState.current = {
       newTransactions: newTransactions ?? [],
@@ -3009,6 +3092,7 @@ export const TransactionTable = forwardRef(
             props.currentCategoryId,
           ),
         );
+        setPendingFlowMetadataByTransactionId(new Map());
       }
       setPrevIsAdding(props.isAdding);
     }
@@ -3026,9 +3110,14 @@ export const TransactionTable = forwardRef(
         newNavigator.onEdit('temp', 'account');
       } else {
         const transactions = latestState.current.newTransactions;
+        const flowMetadataByTransactionId = getPendingFlowMetadataData(
+          transactions,
+          pendingFlowMetadataByTransactionId,
+        );
 
         if (shouldAddAndClose.current) {
-          props.onAdd(transactions);
+          props.onAdd(transactions, flowMetadataByTransactionId);
+          setPendingFlowMetadataByTransactionId(new Map());
           props.onCloseAddTransaction();
         } else {
           const lastDate =
@@ -3040,8 +3129,9 @@ export const TransactionTable = forwardRef(
               lastDate,
             ),
           );
+          setPendingFlowMetadataByTransactionId(new Map());
           newNavigator.onEdit('temp', 'date');
-          props.onAdd(transactions);
+          props.onAdd(transactions, flowMetadataByTransactionId);
         }
       }
       shouldAdd.current = false;
@@ -3069,6 +3159,13 @@ export const TransactionTable = forwardRef(
         'category',
         'debit',
         'credit',
+        'flow-paid-by',
+        'flow-shared',
+        'flow-split',
+        'flow-settlement',
+        'flow-cashflow',
+        'flow-notes',
+        'flow-edit',
         'cleared',
         'cancel',
         'add',
@@ -3087,6 +3184,13 @@ export const TransactionTable = forwardRef(
         'category',
         'debit',
         'credit',
+        'flow-paid-by',
+        'flow-shared',
+        'flow-split',
+        'flow-settlement',
+        'flow-cashflow',
+        'flow-notes',
+        'flow-edit',
         'cleared',
       ];
 
@@ -3531,6 +3635,7 @@ export const TransactionTable = forwardRef(
           props.currentCategoryId,
         ),
       );
+      setPendingFlowMetadataByTransactionId(new Map());
       props.onCloseAddTransaction();
     }
 
@@ -3579,6 +3684,12 @@ export const TransactionTable = forwardRef(
             onCloseAddTransaction={onCloseAddTransaction}
             onToggleSplit={onToggleSplit}
             newTransactions={newTransactions ?? []}
+            pendingFlowMetadataByTransactionId={
+              pendingFlowMetadataByTransactionId
+            }
+            onPendingFlowMetadataRecordChange={
+              onPendingFlowMetadataRecordChange
+            }
             tableNavigator={tableNavigator}
             newNavigator={newNavigator}
             showSelection={props.showSelection}
@@ -3598,6 +3709,28 @@ export const TransactionTable = forwardRef(
 );
 
 TransactionTable.displayName = 'TransactionTable';
+
+function getPendingFlowMetadataData(
+  transactions: TransactionEntity[],
+  recordsByTransactionId: Map<string, FlowTransactionMetadataRecord>,
+): Map<string, FlowTransactionMetadataData> | undefined {
+  const flowMetadataByTransactionId = new Map<
+    string,
+    FlowTransactionMetadataData
+  >();
+
+  for (const transaction of transactions) {
+    const record = recordsByTransactionId.get(transaction.id);
+
+    if (record?.exists) {
+      flowMetadataByTransactionId.set(transaction.id, record.data);
+    }
+  }
+
+  return flowMetadataByTransactionId.size > 0
+    ? flowMetadataByTransactionId
+    : undefined;
+}
 
 const getCategoriesById = memoizeOne(
   (categoryGroups: CategoryGroupEntity[] | null | undefined) => {

@@ -9,8 +9,15 @@ import type { SelectOption } from '@actual-app/components/select';
 import { Text } from '@actual-app/components/text';
 import { theme } from '@actual-app/components/theme';
 import { View } from '@actual-app/components/view';
+import * as monthUtils from '@actual-app/core/shared/months';
+import {
+  currencyToInteger,
+  integerToCurrency,
+} from '@actual-app/core/shared/util';
 
+import { DateSelect } from '#components/select/DateSelect';
 import type { FlowSettings } from '#flow/planning/types';
+import { useDateFormat } from '#hooks/useDateFormat';
 
 import {
   deleteFlowTransactionMetadata,
@@ -21,6 +28,7 @@ import type {
   FlowSettlementStatus,
   FlowSharedStatus,
   FlowSplitMethod,
+  FlowSplitParticipant,
   FlowTransactionMetadataData,
   FlowTransactionMetadataRecord,
 } from './types';
@@ -61,6 +69,7 @@ export function FlowTransactionMetadataEditor({
   onClose,
 }: FlowTransactionMetadataEditorProps) {
   const { t } = useTranslation();
+  const dateFormat = useDateFormat() || 'MM/dd/yyyy';
   const [draft, setDraft] = useState<FlowTransactionMetadataData>(() =>
     copyMetadataData(record.data),
   );
@@ -120,6 +129,23 @@ export function FlowTransactionMetadataEditor({
     value: FlowTransactionMetadataData[K],
   ) {
     setDraft(current => ({ ...current, [key]: value }));
+  }
+
+  function updateSplitMethod(splitMethod: FlowSplitMethod) {
+    setDraft(current => ({
+      ...current,
+      splitMethod,
+      splitData: shouldUseSplitData(splitMethod)
+        ? current.splitData ?? createDefaultSplitData(splitMethod, householdMembers)
+        : current.splitData,
+    }));
+  }
+
+  function updateSplitParticipants(participants: FlowSplitParticipant[]) {
+    setDraft(current => ({
+      ...current,
+      splitData: participants.length > 0 ? { participants } : undefined,
+    }));
   }
 
   return (
@@ -199,7 +225,7 @@ export function FlowTransactionMetadataEditor({
               getSplitMethodLabel(method, t),
             ])}
             value={draft.splitMethod}
-            onChange={value => updateDraft('splitMethod', value)}
+            onChange={updateSplitMethod}
             style={selectStyle}
             popoverStyle={selectPopoverStyle}
           />
@@ -219,20 +245,33 @@ export function FlowTransactionMetadataEditor({
         </EditorField>
 
         <EditorField label={t('Settlement month')}>
-          <input
-            aria-label={t('Settlement month')}
-            type="text"
-            value={draft.settlementMonth ?? ''}
-            onChange={event =>
-              updateDraft('settlementMonth', event.target.value || undefined)
+          <DateSelect
+            value={
+              draft.settlementMonth
+                ? monthUtils.firstDayOfMonth(draft.settlementMonth)
+                : ''
             }
-            inputMode="numeric"
-            maxLength={7}
-            placeholder={t('YYYY-MM')}
-            style={selectStyle}
+            dateFormat={dateFormat}
+            inputProps={{
+              'aria-label': t('Settlement month'),
+              style: selectStyle,
+            }}
+            clearOnBlur={false}
+            onSelect={date =>
+              updateDraft('settlementMonth', monthUtils.monthFromDate(date))
+            }
           />
         </EditorField>
       </View>
+
+      {draft.sharedStatus === 'shared' && shouldUseSplitData(draft.splitMethod) && (
+        <SplitParticipantsEditor
+          splitMethod={draft.splitMethod}
+          members={householdMembers.filter(member => member.active)}
+          participants={draft.splitData?.participants ?? []}
+          onChange={updateSplitParticipants}
+        />
+      )}
 
       <label
         style={{
@@ -311,10 +350,191 @@ function EditorField({ label, children }: EditorFieldProps) {
   );
 }
 
+type SplitParticipantsEditorProps = {
+  splitMethod: FlowSplitMethod;
+  members: FlowSettings['householdMembers'];
+  participants: FlowSplitParticipant[];
+  onChange: (participants: FlowSplitParticipant[]) => void;
+};
+
+function SplitParticipantsEditor({
+  splitMethod,
+  members,
+  participants,
+  onChange,
+}: SplitParticipantsEditorProps) {
+  const { t } = useTranslation();
+  const participantByMemberId = new Map(
+    participants.map(participant => [participant.memberId, participant]),
+  );
+
+  function updateParticipant(
+    memberId: string,
+    updater: (participant: FlowSplitParticipant) => FlowSplitParticipant,
+  ) {
+    const current = participantByMemberId.get(memberId) ?? { memberId };
+    const nextParticipant = updater(current);
+    const nextParticipants = members
+      .map(member =>
+        member.id === memberId
+          ? nextParticipant
+          : participantByMemberId.get(member.id),
+      )
+      .filter(isSplitParticipantIncluded);
+
+    onChange(nextParticipants);
+  }
+
+  function toggleParticipant(memberId: string, checked: boolean) {
+    if (checked) {
+      updateParticipant(memberId, participant => participant);
+      return;
+    }
+
+    onChange(participants.filter(participant => participant.memberId !== memberId));
+  }
+
+  return (
+    <View
+      style={{
+        border: `1px solid ${theme.tableBorder}`,
+        borderRadius: 6,
+        padding: 10,
+        gap: 8,
+      }}
+    >
+      <View style={{ gap: 3 }}>
+        <Text style={{ fontWeight: 600 }}>
+          <Trans>Split participants</Trans>
+        </Text>
+        <Text style={{ color: theme.pageTextSubdued, fontSize: 12 }}>
+          {splitMethod === 'percentage' ? (
+            <Trans>Included percentages must total 100%.</Trans>
+          ) : splitMethod === 'fixed-amount' ? (
+            <Trans>
+              Fixed amounts are entered as currency values and cannot exceed the
+              transaction amount.
+            </Trans>
+          ) : (
+            <Trans>
+              Custom splits can use fixed amounts, percentages, or both.
+              Percentages apply to any amount left after fixed amounts.
+            </Trans>
+          )}
+        </Text>
+      </View>
+
+      {members.length === 0 ? (
+        <Text style={{ color: theme.warningText }}>
+          <Trans>No active household members are available for split data.</Trans>
+        </Text>
+      ) : (
+        <View style={{ gap: 6 }}>
+          {members.map(member => {
+            const participant = participantByMemberId.get(member.id);
+            const isIncluded = participant !== undefined;
+
+            return (
+              <View
+                key={member.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns:
+                    splitMethod === 'custom'
+                      ? 'minmax(130px, 1fr) 95px 120px'
+                      : 'minmax(130px, 1fr) 120px',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    color: theme.pageText,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isIncluded}
+                    onChange={event =>
+                      toggleParticipant(member.id, event.currentTarget.checked)
+                    }
+                  />
+                  <Text>{member.name}</Text>
+                </label>
+
+                {(splitMethod === 'percentage' || splitMethod === 'custom') && (
+                  <input
+                    aria-label={t('Percentage for {{name}}', {
+                      name: member.name,
+                    })}
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.01}
+                    value={participant?.percentage ?? ''}
+                    disabled={!isIncluded}
+                    placeholder={t('Percent')}
+                    onChange={event =>
+                      updateParticipant(member.id, current => ({
+                        ...current,
+                        percentage: parseOptionalNumber(
+                          event.currentTarget.value,
+                        ),
+                      }))
+                    }
+                    style={splitInputStyle}
+                  />
+                )}
+
+                {(splitMethod === 'fixed-amount' ||
+                  splitMethod === 'custom') && (
+                  <input
+                    aria-label={t('Fixed amount for {{name}}', {
+                      name: member.name,
+                    })}
+                    value={
+                      participant?.fixedAmount != null
+                        ? integerToCurrency(participant.fixedAmount)
+                        : ''
+                    }
+                    disabled={!isIncluded}
+                    placeholder={t('Amount')}
+                    onChange={event =>
+                      updateParticipant(member.id, current => ({
+                        ...current,
+                        fixedAmount: parseOptionalCurrency(
+                          event.currentTarget.value,
+                        ),
+                      }))
+                    }
+                    style={splitInputStyle}
+                  />
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function copyMetadataData(
   data: FlowTransactionMetadataData,
 ): FlowTransactionMetadataData {
-  return { ...data };
+  return {
+    ...data,
+    splitData: data.splitData
+      ? {
+          participants: data.splitData.participants.map(participant => ({
+            ...participant,
+          })),
+        }
+      : undefined,
+  };
 }
 
 function normalizeDraft(
@@ -326,12 +546,119 @@ function normalizeDraft(
     enteredByMemberId: cleanOptionalString(draft.enteredByMemberId),
     settlementMonth: cleanOptionalString(draft.settlementMonth),
     flowNotes: cleanOptionalString(draft.flowNotes),
+    splitData: shouldUseSplitData(draft.splitMethod)
+      ? cleanSplitData(draft.splitData?.participants ?? [])
+      : undefined,
   };
 }
 
 function cleanOptionalString(value: string | undefined): string | undefined {
   const trimmedValue = value?.trim();
   return trimmedValue ? trimmedValue : undefined;
+}
+
+function shouldUseSplitData(splitMethod: FlowSplitMethod) {
+  return (
+    splitMethod === 'percentage' ||
+    splitMethod === 'fixed-amount' ||
+    splitMethod === 'custom'
+  );
+}
+
+function createDefaultSplitData(
+  splitMethod: FlowSplitMethod,
+  members: FlowSettings['householdMembers'],
+): { participants: FlowSplitParticipant[] } | undefined {
+  const activeMembers = members.filter(member => member.active);
+
+  if (activeMembers.length === 0) {
+    return undefined;
+  }
+
+  if (splitMethod === 'percentage') {
+    const basisPoints = splitInteger(10_000, activeMembers.length);
+
+    return {
+      participants: activeMembers.map((member, index) => ({
+        memberId: member.id,
+        percentage: (basisPoints[index] ?? 0) / 100,
+      })),
+    };
+  }
+
+  return {
+    participants: activeMembers.map(member => ({ memberId: member.id })),
+  };
+}
+
+function cleanSplitData(
+  participants: FlowSplitParticipant[],
+): { participants: FlowSplitParticipant[] } | undefined {
+  const cleanedParticipants = participants
+    .map(participant => ({
+      memberId: cleanOptionalString(participant.memberId),
+      percentage: participant.percentage,
+      fixedAmount: participant.fixedAmount,
+    }))
+    .filter(
+      (
+        participant,
+      ): participant is {
+        memberId: string;
+        percentage: number | undefined;
+        fixedAmount: number | undefined;
+      } => participant.memberId !== undefined,
+    )
+    .map(participant => ({
+      memberId: participant.memberId,
+      percentage:
+        participant.percentage != null && participant.percentage >= 0
+          ? participant.percentage
+          : undefined,
+      fixedAmount:
+        participant.fixedAmount != null && participant.fixedAmount >= 0
+          ? participant.fixedAmount
+          : undefined,
+    }));
+
+  return cleanedParticipants.length > 0
+    ? { participants: cleanedParticipants }
+    : undefined;
+}
+
+function isSplitParticipantIncluded(
+  participant: FlowSplitParticipant | undefined,
+): participant is FlowSplitParticipant {
+  return participant !== undefined;
+}
+
+function parseOptionalNumber(value: string): number | undefined {
+  if (value.trim() === '') {
+    return undefined;
+  }
+
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0
+    ? numberValue
+    : undefined;
+}
+
+function parseOptionalCurrency(value: string): number | undefined {
+  if (value.trim() === '') {
+    return undefined;
+  }
+
+  const amount = currencyToInteger(value);
+  return amount != null && amount >= 0 ? amount : undefined;
+}
+
+function splitInteger(amount: number, count: number): number[] {
+  const baseAmount = Math.floor(amount / count);
+  const remainder = amount % count;
+
+  return Array.from({ length: count }, (_, index) =>
+    index < remainder ? baseAmount + 1 : baseAmount,
+  );
 }
 
 type TranslationFn = ReturnType<typeof useTranslation>['t'];
@@ -396,6 +723,13 @@ const selectStyle: CSSProperties = {
 
 const selectPopoverStyle: CSSProperties = {
   minWidth: 220,
+};
+
+const splitInputStyle: CSSProperties = {
+  ...baseInputStyle,
+  width: '100%',
+  height: 30,
+  padding: '0 8px',
 };
 
 const textareaStyle: CSSProperties = {

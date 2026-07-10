@@ -32,6 +32,8 @@ import type {
 
 import { FeatureErrorFallback } from '#components/FeatureErrorFallback';
 import type { TableHandleRef } from '#components/table';
+import { saveFlowTransactionMetadata } from '#flow/transaction-metadata/storage';
+import type { FlowTransactionMetadataData } from '#flow/transaction-metadata/types';
 import { isValidBoundaryDrop } from '#hooks/useDragDrop';
 import type { DropPosition } from '#hooks/useDragDrop';
 import { useNavigate } from '#hooks/useNavigate';
@@ -82,6 +84,66 @@ async function saveDiffAndApply(diff, changes, onChange, learnCategories) {
     applyTransactionDiff(changes.newTransaction, remoteDiff),
     // @ts-expect-error - fix me
     applyChanges(remoteDiff, changes.data),
+  );
+}
+
+function mapTemporaryTransactionIds(
+  temporaryTransactions: TransactionEntity[],
+  actualTransactions: TransactionEntity[],
+): Map<string, string> {
+  const actualTransactionIdByTemporaryId = new Map<string, string>();
+  const temporaryParent = temporaryTransactions.find(
+    transaction => !transaction.is_child,
+  );
+  const actualParent = actualTransactions.find(
+    transaction => !transaction.is_child,
+  );
+
+  if (temporaryParent && actualParent) {
+    actualTransactionIdByTemporaryId.set(temporaryParent.id, actualParent.id);
+  }
+
+  const temporaryChildren = temporaryTransactions.filter(
+    transaction => transaction.is_child,
+  );
+  const actualChildren = actualTransactions.filter(
+    transaction => transaction.is_child,
+  );
+
+  temporaryChildren.forEach((temporaryTransaction, index) => {
+    const actualTransaction = actualChildren[index];
+
+    if (actualTransaction) {
+      actualTransactionIdByTemporaryId.set(
+        temporaryTransaction.id,
+        actualTransaction.id,
+      );
+    }
+  });
+
+  return actualTransactionIdByTemporaryId;
+}
+
+async function saveAddedFlowMetadata(
+  flowMetadataByTransactionId:
+    | Map<string, FlowTransactionMetadataData>
+    | undefined,
+  actualTransactionIdByTemporaryId: Map<string, string>,
+) {
+  if (!flowMetadataByTransactionId || flowMetadataByTransactionId.size === 0) {
+    return;
+  }
+
+  await Promise.all(
+    [...flowMetadataByTransactionId].map(([temporaryTransactionId, data]) => {
+      const actualTransactionId = actualTransactionIdByTemporaryId.get(
+        temporaryTransactionId,
+      );
+
+      return actualTransactionId
+        ? saveFlowTransactionMetadata(actualTransactionId, data)
+        : Promise.resolve();
+    }),
   );
 }
 
@@ -383,8 +445,16 @@ export function TransactionList({
   );
 
   const onAdd = useCallback(
-    async (newTransactions: TransactionEntity[]) => {
+    async (
+      newTransactions: TransactionEntity[],
+      flowMetadataByTransactionId?: Map<string, FlowTransactionMetadataData>,
+    ) => {
+      const temporaryTransactions = newTransactions;
       newTransactions = realizeTempTransactions(newTransactions);
+      const actualTransactionIdByTemporaryId = mapTemporaryTransactionIds(
+        temporaryTransactions,
+        newTransactions,
+      );
 
       const parentTransaction = newTransactions.find(t => !t.is_child);
       const isLinkedToSchedule = !!parentTransaction?.schedule;
@@ -413,12 +483,20 @@ export function TransactionList({
               { added: newTransactions },
               isLearnCategoriesEnabled,
             );
+            await saveAddedFlowMetadata(
+              flowMetadataByTransactionId,
+              actualTransactionIdByTemporaryId,
+            );
           },
         );
         return;
       }
 
       await saveDiff({ added: newTransactions }, isLearnCategoriesEnabled);
+      await saveAddedFlowMetadata(
+        flowMetadataByTransactionId,
+        actualTransactionIdByTemporaryId,
+      );
       onRefetch();
     },
     [isLearnCategoriesEnabled, onRefetch, promptToConvertToSchedule],
