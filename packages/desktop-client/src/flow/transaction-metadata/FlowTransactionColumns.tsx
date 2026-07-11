@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 
+import { baseInputStyle } from '@actual-app/components/input';
 import { Popover } from '@actual-app/components/popover';
 import { Text } from '@actual-app/components/text';
 import { theme } from '@actual-app/components/theme';
@@ -60,7 +61,12 @@ type FlowTransactionHeaderCellsProps = {
 export function createDefaultFlowTransactionRecord(
   actualTransactionId: string,
   settings: FlowSettings | null,
+  isTransfer = false,
 ): FlowTransactionMetadataRecord {
+  if (isTransfer) {
+    return createTransferDefaultFlowTransactionRecord(actualTransactionId);
+  }
+
   return {
     actualTransactionId,
     data: settings
@@ -72,6 +78,22 @@ export function createDefaultFlowTransactionRecord(
           settlementStatus: 'not-needed',
           cashflowIncluded: true,
         },
+    exists: false,
+  };
+}
+
+function createTransferDefaultFlowTransactionRecord(
+  actualTransactionId: string,
+): FlowTransactionMetadataRecord {
+  return {
+    actualTransactionId,
+    data: {
+      version: 1,
+      sharedStatus: 'personal',
+      splitMethod: 'none',
+      settlementStatus: 'not-needed',
+      cashflowIncluded: false,
+    },
     exists: false,
   };
 }
@@ -116,6 +138,7 @@ type FlowTransactionCellsProps = {
     record: FlowTransactionMetadataRecord,
     data: FlowTransactionMetadataData,
   ) => Promise<FlowTransactionMetadataRecord> | FlowTransactionMetadataRecord;
+  isTransfer?: boolean;
 };
 
 export function FlowTransactionCells({
@@ -125,6 +148,7 @@ export function FlowTransactionCells({
   focusedField,
   onEdit,
   onUpdateData,
+  isTransfer = false,
 }: FlowTransactionCellsProps) {
   const { t } = useTranslation();
   const [isEditorOpen, setEditorOpen] = useState(false);
@@ -135,7 +159,10 @@ export function FlowTransactionCells({
     return <FlowTransactionPlaceholderCells label={t('Loading')} />;
   }
 
-  const activeRecord = record;
+  const activeRecord =
+    isTransfer && !record.exists
+      ? createTransferDefaultFlowTransactionRecord(record.actualTransactionId)
+      : record;
   const isDefault = !activeRecord.exists;
   const data = activeRecord.data;
   const notesPreview = data.flowNotes ?? '';
@@ -458,13 +485,14 @@ function FlowSelectCell({
             }
           }}
           style={{
+            ...baseInputStyle,
             width: '100%',
             height: 24,
-            border: `1px solid ${theme.formInputBorder}`,
-            borderRadius: 4,
-            backgroundColor: theme.formInputBackground,
+            padding: '0 20px 0 6px',
+            backgroundColor: theme.tableBackground,
             color: theme.formInputText,
             fontSize: 12,
+            lineHeight: '22px',
           }}
         >
           {options.map(([optionValue, label]) => (

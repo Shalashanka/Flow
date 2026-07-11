@@ -1009,6 +1009,9 @@ const Transaction = memo(function Transaction({
     serializeTransaction(originalTransaction, showZeroInDeposit),
   );
   const isPreview = isPreviewId(transaction.id);
+  const isTransferTransaction = Boolean(
+    transferAccountsByTransaction[transaction.id],
+  );
 
   if (
     originalTransaction !== prevTransaction ||
@@ -1913,10 +1916,12 @@ const Transaction = memo(function Transaction({
                 ? createDefaultFlowTransactionRecord(
                     transaction.id,
                     flowSettings ?? null,
+                    isTransferTransaction,
                   )
                 : undefined)
             }
             settings={flowSettings ?? null}
+            isTransfer={isTransferTransaction}
             onRecordChange={
               onFlowMetadataRecordChange ?? ignoreFlowMetadataRecordChange
             }

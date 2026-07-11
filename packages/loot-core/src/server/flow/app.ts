@@ -2,10 +2,18 @@ import { createApp } from '#server/app';
 import * as db from '#server/db';
 import { mutator } from '#server/mutators';
 import { batchMessages } from '#server/sync';
-import { isFlowSettlementStatus } from '#shared/flow-settlement';
+import {
+  isFlowSettlementMonthStatus,
+  isFlowSettlementPaymentLinkStatus,
+  isFlowSettlementStatus,
+} from '#shared/flow-settlement';
 import type {
   FlowSettlementItem,
+  FlowSettlementMonthClosure,
+  FlowSettlementMonthStatus,
+  FlowSettlementPaymentLink,
   FlowSettlementSnapshot,
+  FlowSettlementStatus,
   FlowSettlementSummary,
 } from '#shared/flow-settlement';
 import { normalizeFlowTransactionMetadataData } from '#shared/flow-transaction-metadata';
@@ -85,6 +93,50 @@ type FlowSettlementItemsResponse = {
   items: FlowSettlementItem[];
 };
 
+type FlowSettlementPaymentLinksResponse = {
+  links: FlowSettlementPaymentLink[];
+};
+
+type FlowSettlementPaymentLinkSaveRequest = {
+  settlementId: string;
+  month: string;
+  paymentTransactionId: string;
+  amount: number;
+  notes?: string;
+};
+
+type FlowSettlementPaymentLinkDeleteRequest = {
+  settlementId: string;
+  month: string;
+};
+
+type FlowSettlementPaymentLinkSaveResponse = {
+  saved: boolean;
+};
+
+type FlowSettlementPaymentLinkDeleteResponse = {
+  deleted: boolean;
+};
+
+type FlowSettlementMonthCloseSaveRequest = {
+  month: string;
+  status: 'closed';
+  notes?: string;
+};
+
+type FlowSettlementMonthCloseSaveResponse = {
+  saved: boolean;
+};
+
+type FlowSettlementMonthReopenRequest = {
+  month: string;
+  notes?: string;
+};
+
+type FlowSettlementMonthReopenResponse = {
+  reopened: boolean;
+};
+
 type FlowSettlementRow = {
   id: string;
   month: string | null;
@@ -117,6 +169,31 @@ type FlowSettlementItemRow = {
   updated_at: string | null;
 };
 
+type FlowSettlementPaymentLinkRow = {
+  id: string;
+  settlement_id: string | null;
+  month: string | null;
+  payment_transaction_id: string | null;
+  amount: number | null;
+  link_status: string | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowSettlementMonthClosureRow = {
+  id: string;
+  month: string | null;
+  status: string | null;
+  closed_at: string | null;
+  reopened_at: string | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export type FlowHandlers = {
   'flow/settings-get': typeof getFlowSettingsRow;
   'flow/settings-save': typeof saveFlowSettingsRow;
@@ -129,6 +206,12 @@ export type FlowHandlers = {
   'flow/settlements-save': typeof saveSettlements;
   'flow/settlements-delete': typeof deleteSettlements;
   'flow/settlement-items-get': typeof getSettlementItems;
+  'flow/settlement-payment-links-get': typeof getSettlementPaymentLinks;
+  'flow/settlement-payment-link-save': typeof saveSettlementPaymentLink;
+  'flow/settlement-payment-link-delete': typeof deleteSettlementPaymentLink;
+  'flow/settlement-month-close-get': typeof getSettlementMonthClose;
+  'flow/settlement-month-close-save': typeof saveSettlementMonthClose;
+  'flow/settlement-month-reopen': typeof reopenSettlementMonth;
 };
 
 export const app = createApp<FlowHandlers>();
@@ -150,6 +233,21 @@ app.method('flow/settlements-get', getSettlements);
 app.method('flow/settlements-save', mutator(saveSettlements));
 app.method('flow/settlements-delete', mutator(deleteSettlements));
 app.method('flow/settlement-items-get', getSettlementItems);
+app.method('flow/settlement-payment-links-get', getSettlementPaymentLinks);
+app.method(
+  'flow/settlement-payment-link-save',
+  mutator(saveSettlementPaymentLink),
+);
+app.method(
+  'flow/settlement-payment-link-delete',
+  mutator(deleteSettlementPaymentLink),
+);
+app.method('flow/settlement-month-close-get', getSettlementMonthClose);
+app.method(
+  'flow/settlement-month-close-save',
+  mutator(saveSettlementMonthClose),
+);
+app.method('flow/settlement-month-reopen', mutator(reopenSettlementMonth));
 
 async function getFlowSettingsRow(): Promise<FlowSettingsResponse> {
   return {
@@ -417,6 +515,157 @@ async function getSettlementItems({
   };
 }
 
+async function getSettlementPaymentLinks({
+  month,
+}: FlowSettlementsMonthRequest): Promise<FlowSettlementPaymentLinksResponse> {
+  const rows = await selectSettlementPaymentLinkRows(requireMonth(month));
+
+  return {
+    links: rows.map(rowToSettlementPaymentLink).filter(isSettlementPaymentLink),
+  };
+}
+
+async function saveSettlementPaymentLink({
+  settlementId,
+  month,
+  paymentTransactionId,
+  amount,
+  notes,
+}: FlowSettlementPaymentLinkSaveRequest): Promise<FlowSettlementPaymentLinkSaveResponse> {
+  const normalizedMonth = requireMonth(month);
+  const normalizedSettlementId = requireSettlementId(settlementId);
+  const normalizedPaymentTransactionId =
+    requireActualTransactionId(paymentTransactionId);
+  const normalizedAmount = Math.abs(requireNonNegativeInteger(amount));
+  const now = new Date().toISOString();
+
+  await assertSettlementMonthNotClosed(normalizedMonth);
+
+  await batchMessages(async () => {
+    await upsertSettlementPaymentLinkRow(
+      {
+        id: paymentLinkIdFor(normalizedSettlementId),
+        settlementId: normalizedSettlementId,
+        month: normalizedMonth,
+        paymentTransactionId: normalizedPaymentTransactionId,
+        amount: normalizedAmount,
+        linkStatus: 'linked',
+        notes: getString(notes),
+      },
+      now,
+    );
+    await updateSettlementPaymentState(
+      normalizedSettlementId,
+      normalizedPaymentTransactionId,
+      'paid',
+      now,
+    );
+    await upsertSettlementMonthClosureIfNotClosed(
+      normalizedMonth,
+      'payment-linked',
+      now,
+    );
+  });
+
+  return { saved: true };
+}
+
+async function deleteSettlementPaymentLink({
+  settlementId,
+  month,
+}: FlowSettlementPaymentLinkDeleteRequest): Promise<FlowSettlementPaymentLinkDeleteResponse> {
+  const normalizedMonth = requireMonth(month);
+  const normalizedSettlementId = requireSettlementId(settlementId);
+  const now = new Date().toISOString();
+  const existingRow = await db.first<Pick<FlowSettlementPaymentLinkRow, 'id'>>(
+    'SELECT id FROM flow_settlement_payment_links WHERE id = ?',
+    [paymentLinkIdFor(normalizedSettlementId)],
+  );
+
+  await assertSettlementMonthNotClosed(normalizedMonth);
+
+  await batchMessages(async () => {
+    if (existingRow) {
+      await db.update('flow_settlement_payment_links', {
+        id: existingRow.id,
+        link_status: 'unlinked',
+        tombstone: 1,
+        updated_at: now,
+      });
+    }
+
+    await updateSettlementPaymentState(
+      normalizedSettlementId,
+      null,
+      'open',
+      now,
+    );
+    await refreshSettlementMonthClosureFromLinks(normalizedMonth, now);
+  });
+
+  return { deleted: Boolean(existingRow) };
+}
+
+async function getSettlementMonthClose({
+  month,
+}: FlowSettlementsMonthRequest): Promise<FlowSettlementMonthClosure | null> {
+  const row = await selectSettlementMonthClosureRow(requireMonth(month));
+
+  return row ? rowToSettlementMonthClosure(row) : null;
+}
+
+async function saveSettlementMonthClose({
+  month,
+  status,
+  notes,
+}: FlowSettlementMonthCloseSaveRequest): Promise<FlowSettlementMonthCloseSaveResponse> {
+  const normalizedMonth = requireMonth(month);
+
+  if (status !== 'closed') {
+    throw new Error('Settlement month close status must be closed.');
+  }
+
+  const now = new Date().toISOString();
+
+  await batchMessages(async () => {
+    await upsertSettlementMonthClosure(
+      {
+        month: normalizedMonth,
+        status: 'closed',
+        closedAt: now,
+        notes: getString(notes),
+      },
+      now,
+    );
+    await updateSettlementRowsForMonthStatus(normalizedMonth, 'closed', now);
+  });
+
+  return { saved: true };
+}
+
+async function reopenSettlementMonth({
+  month,
+  notes,
+}: FlowSettlementMonthReopenRequest): Promise<FlowSettlementMonthReopenResponse> {
+  const normalizedMonth = requireMonth(month);
+  const now = new Date().toISOString();
+
+  await batchMessages(async () => {
+    await upsertSettlementMonthClosure(
+      {
+        month: normalizedMonth,
+        status: 'reopened',
+        reopenedAt: now,
+        notes: getString(notes),
+      },
+      now,
+    );
+    await updateSettlementRowsForMonthOpenState(normalizedMonth, now);
+  });
+
+  return { reopened: true };
+}
+
 async function saveSettlements({
   month,
   settlements,
@@ -424,6 +673,9 @@ async function saveSettlements({
 }: FlowSettlementsSaveRequest): Promise<FlowSettlementsSaveResponse> {
   const normalizedMonth = requireMonth(month);
   const now = new Date().toISOString();
+
+  await assertSettlementMonthNotClosed(normalizedMonth);
+
   const normalizedSettlements = (settlements ?? [])
     .map(settlement => normalizeSettlementSummary(normalizedMonth, settlement))
     .filter(isSettlementSummary);
@@ -441,6 +693,12 @@ async function saveSettlements({
     for (const item of normalizedItems) {
       await upsertSettlementItemRow(normalizedMonth, item, now);
     }
+
+    await upsertSettlementMonthClosureIfNotClosed(
+      normalizedMonth,
+      'calculated',
+      now,
+    );
   });
 
   return { saved: true };
@@ -449,10 +707,16 @@ async function saveSettlements({
 async function deleteSettlements({
   month,
 }: FlowSettlementsMonthRequest): Promise<FlowSettlementsDeleteResponse> {
-  await tombstoneSettlementsForMonth(
-    requireMonth(month),
-    new Date().toISOString(),
-  );
+  const normalizedMonth = requireMonth(month);
+  const now = new Date().toISOString();
+
+  await assertSettlementMonthNotClosed(normalizedMonth);
+
+  await batchMessages(async () => {
+    await tombstoneSettlementsForMonth(normalizedMonth, now);
+    await tombstoneSettlementPaymentLinksForMonth(normalizedMonth, now);
+    await upsertSettlementMonthClosureIfNotClosed(normalizedMonth, 'open', now);
+  });
   return { deleted: true };
 }
 
@@ -512,6 +776,82 @@ async function selectSettlementItemRows(
   );
 }
 
+async function selectSettlementPaymentLinkRows(
+  month: string,
+): Promise<FlowSettlementPaymentLinkRow[]> {
+  return db.all<FlowSettlementPaymentLinkRow>(
+    `
+      SELECT
+        id,
+        settlement_id,
+        month,
+        payment_transaction_id,
+        amount,
+        link_status,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_settlement_payment_links
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+      ORDER BY settlement_id, payment_transaction_id
+    `,
+    [month],
+  );
+}
+
+async function selectSettlementPaymentLinkRow(
+  settlementId: string,
+): Promise<FlowSettlementPaymentLinkRow | null> {
+  return db.first<FlowSettlementPaymentLinkRow>(
+    `
+      SELECT
+        id,
+        settlement_id,
+        month,
+        payment_transaction_id,
+        amount,
+        link_status,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_settlement_payment_links
+      WHERE settlement_id = ?
+        AND COALESCE(tombstone, 0) = 0
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+    [settlementId],
+  );
+}
+
+async function selectSettlementMonthClosureRow(
+  month: string,
+): Promise<FlowSettlementMonthClosureRow | null> {
+  return db.first<FlowSettlementMonthClosureRow>(
+    `
+      SELECT
+        id,
+        month,
+        status,
+        closed_at,
+        reopened_at,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_settlement_month_closures
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+    [month],
+  );
+}
+
 async function tombstoneSettlementsForMonth(
   month: string,
   updatedAt: string,
@@ -552,6 +892,30 @@ async function tombstoneSettlementsForMonth(
   }
 }
 
+async function tombstoneSettlementPaymentLinksForMonth(
+  month: string,
+  updatedAt: string,
+): Promise<void> {
+  const linkRows = await db.all<Pick<FlowSettlementPaymentLinkRow, 'id'>>(
+    `
+      SELECT id
+      FROM flow_settlement_payment_links
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+
+  for (const row of linkRows) {
+    await db.update('flow_settlement_payment_links', {
+      id: row.id,
+      link_status: 'unlinked',
+      tombstone: 1,
+      updated_at: updatedAt,
+    });
+  }
+}
+
 async function upsertSettlementRow(
   settlement: FlowSettlementSummary,
   now: string,
@@ -565,6 +929,14 @@ async function upsertSettlementRow(
     'SELECT id FROM flow_settlements WHERE id = ?',
     [id],
   );
+  const paymentLink = await selectSettlementPaymentLinkRow(id);
+  const linkedPaymentTransactionId =
+    settlement.paymentTransactionId ??
+    getString(paymentLink?.payment_transaction_id);
+  const status =
+    linkedPaymentTransactionId && settlement.status === 'open'
+      ? 'paid'
+      : settlement.status;
   const row = {
     id,
     month: settlement.month,
@@ -572,7 +944,8 @@ async function upsertSettlementRow(
     to_member_id: settlement.toMemberId,
     amount: settlement.amount,
     item_count: settlement.itemCount,
-    status: settlement.status,
+    status,
+    payment_transaction_id: linkedPaymentTransactionId ?? null,
     updated_at: now,
     tombstone: 0,
   };
@@ -583,6 +956,220 @@ async function upsertSettlementRow(
     await db.insert('flow_settlements', {
       ...row,
       created_at: now,
+    });
+  }
+}
+
+async function upsertSettlementPaymentLinkRow(
+  link: FlowSettlementPaymentLink,
+  now: string,
+): Promise<void> {
+  const existingRow = await db.first<Pick<FlowSettlementPaymentLinkRow, 'id'>>(
+    'SELECT id FROM flow_settlement_payment_links WHERE id = ?',
+    [link.id],
+  );
+  const row = {
+    id: link.id,
+    settlement_id: link.settlementId,
+    month: link.month,
+    payment_transaction_id: link.paymentTransactionId,
+    amount: link.amount,
+    link_status: link.linkStatus,
+    notes: link.notes ?? null,
+    updated_at: now,
+    tombstone: 0,
+  };
+
+  if (existingRow) {
+    await db.update('flow_settlement_payment_links', row);
+  } else {
+    await db.insert('flow_settlement_payment_links', {
+      ...row,
+      created_at: now,
+    });
+  }
+}
+
+async function upsertSettlementMonthClosure(
+  closure: FlowSettlementMonthClosure,
+  now: string,
+): Promise<void> {
+  const id = monthClosureIdFor(closure.month);
+  const existingRow = await db.first<Pick<FlowSettlementMonthClosureRow, 'id'>>(
+    'SELECT id FROM flow_settlement_month_closures WHERE id = ?',
+    [id],
+  );
+  const existingClosure = existingRow
+    ? await selectSettlementMonthClosureRow(closure.month)
+    : null;
+  const row = {
+    id,
+    month: closure.month,
+    status: closure.status,
+    closed_at: closure.closedAt ?? existingClosure?.closed_at ?? null,
+    reopened_at: closure.reopenedAt ?? existingClosure?.reopened_at ?? null,
+    notes: closure.notes ?? existingClosure?.notes ?? null,
+    updated_at: now,
+    tombstone: 0,
+  };
+
+  if (existingRow) {
+    await db.update('flow_settlement_month_closures', row);
+  } else {
+    await db.insert('flow_settlement_month_closures', {
+      ...row,
+      created_at: now,
+    });
+  }
+}
+
+async function upsertSettlementMonthClosureIfNotClosed(
+  month: string,
+  status: FlowSettlementMonthStatus,
+  now: string,
+): Promise<void> {
+  const existingClosure = await selectSettlementMonthClosureRow(month);
+
+  if (existingClosure?.status === 'closed') {
+    return;
+  }
+
+  await upsertSettlementMonthClosure(
+    {
+      month,
+      status,
+      closedAt: existingClosure?.closed_at ?? undefined,
+      reopenedAt: existingClosure?.reopened_at ?? undefined,
+      notes: existingClosure?.notes ?? undefined,
+    },
+    now,
+  );
+}
+
+async function refreshSettlementMonthClosureFromLinks(
+  month: string,
+  now: string,
+): Promise<void> {
+  const existingClosure = await selectSettlementMonthClosureRow(month);
+
+  if (existingClosure?.status === 'closed') {
+    return;
+  }
+
+  const linkCount = await db.first<{ count: number }>(
+    `
+      SELECT COUNT(*) AS count
+      FROM flow_settlement_payment_links
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+  const settlementCount = await db.first<{ count: number }>(
+    `
+      SELECT COUNT(*) AS count
+      FROM flow_settlements
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+  const nextStatus =
+    (linkCount?.count ?? 0) > 0
+      ? 'payment-linked'
+      : (settlementCount?.count ?? 0) > 0
+        ? 'calculated'
+        : 'open';
+
+  await upsertSettlementMonthClosure(
+    {
+      month,
+      status: nextStatus,
+      closedAt: existingClosure?.closed_at ?? undefined,
+      reopenedAt: existingClosure?.reopened_at ?? undefined,
+      notes: existingClosure?.notes ?? undefined,
+    },
+    now,
+  );
+}
+
+async function assertSettlementMonthNotClosed(month: string): Promise<void> {
+  const existingClosure = await selectSettlementMonthClosureRow(month);
+
+  if (existingClosure?.status === 'closed') {
+    throw new Error('Settlement month is closed. Reopen it before editing.');
+  }
+}
+
+async function updateSettlementPaymentState(
+  settlementId: string,
+  paymentTransactionId: string | null,
+  status: 'open' | 'paid',
+  updatedAt: string,
+): Promise<void> {
+  const existingRow = await db.first<Pick<FlowSettlementRow, 'id'>>(
+    'SELECT id FROM flow_settlements WHERE id = ?',
+    [settlementId],
+  );
+
+  if (!existingRow) {
+    return;
+  }
+
+  await db.update('flow_settlements', {
+    id: settlementId,
+    payment_transaction_id: paymentTransactionId,
+    status,
+    updated_at: updatedAt,
+    tombstone: 0,
+  });
+}
+
+async function updateSettlementRowsForMonthStatus(
+  month: string,
+  status: FlowSettlementStatus,
+  updatedAt: string,
+): Promise<void> {
+  const rows = await db.all<Pick<FlowSettlementRow, 'id'>>(
+    `
+      SELECT id
+      FROM flow_settlements
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+
+  for (const row of rows) {
+    await db.update('flow_settlements', {
+      id: row.id,
+      status,
+      updated_at: updatedAt,
+    });
+  }
+}
+
+async function updateSettlementRowsForMonthOpenState(
+  month: string,
+  updatedAt: string,
+): Promise<void> {
+  const rows = await db.all<
+    Pick<FlowSettlementRow, 'id' | 'payment_transaction_id'>
+  >(
+    `
+      SELECT id, payment_transaction_id
+      FROM flow_settlements
+      WHERE month = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [month],
+  );
+
+  for (const row of rows) {
+    await db.update('flow_settlements', {
+      id: row.id,
+      status: row.payment_transaction_id ? 'paid' : 'open',
+      updated_at: updatedAt,
     });
   }
 }
@@ -647,6 +1234,65 @@ function rowToSettlementSummary(
     amount,
     itemCount: getInteger(row.item_count) ?? 0,
     status: isFlowSettlementStatus(status) ? status : 'open',
+    paymentTransactionId: getString(row.payment_transaction_id),
+  };
+}
+
+function rowToSettlementPaymentLink(
+  row: FlowSettlementPaymentLinkRow,
+): FlowSettlementPaymentLink | null {
+  const id = getString(row.id);
+  const settlementId = getString(row.settlement_id);
+  const month = getString(row.month);
+  const paymentTransactionId = getString(row.payment_transaction_id);
+  const amount = getInteger(row.amount);
+
+  if (
+    !id ||
+    !settlementId ||
+    !month ||
+    !paymentTransactionId ||
+    amount == null
+  ) {
+    return null;
+  }
+
+  const linkStatus = getString(row.link_status);
+
+  return {
+    id,
+    settlementId,
+    month,
+    paymentTransactionId,
+    amount,
+    linkStatus: isFlowSettlementPaymentLinkStatus(linkStatus)
+      ? linkStatus
+      : 'linked',
+    notes: getString(row.notes),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
+  };
+}
+
+function rowToSettlementMonthClosure(
+  row: FlowSettlementMonthClosureRow,
+): FlowSettlementMonthClosure | null {
+  const month = getString(row.month);
+
+  if (!month) {
+    return null;
+  }
+
+  const status = getString(row.status);
+
+  return {
+    month,
+    status: isFlowSettlementMonthStatus(status) ? status : 'open',
+    closedAt: getString(row.closed_at),
+    reopenedAt: getString(row.reopened_at),
+    notes: getString(row.notes),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
   };
 }
 
@@ -705,6 +1351,7 @@ function normalizeSettlementSummary(
     status: isFlowSettlementStatus(settlement?.status)
       ? settlement.status
       : 'open',
+    paymentTransactionId: getString(settlement?.paymentTransactionId),
   };
 }
 
@@ -754,12 +1401,38 @@ function settlementIdFor(
   return `flow-settlement:${month}:${fromMemberId}:${toMemberId}`;
 }
 
+function paymentLinkIdFor(settlementId: string) {
+  return `flow-settlement-payment-link:${settlementId}`;
+}
+
+function monthClosureIdFor(month: string) {
+  return `flow-settlement-month-close:${month}`;
+}
+
 function requireMonth(month: string): string {
   if (!/^\d{4}-\d{2}$/.test(month)) {
     throw new Error('Settlement month must use YYYY-MM format.');
   }
 
   return month;
+}
+
+function requireSettlementId(settlementId: string): string {
+  if (!settlementId) {
+    throw new Error('Settlement id is required.');
+  }
+
+  return settlementId;
+}
+
+function requireNonNegativeInteger(value: number): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(
+      'Settlement payment amount must be a non-negative integer.',
+    );
+  }
+
+  return value;
 }
 
 function getString(value: unknown): string | undefined {
@@ -782,4 +1455,10 @@ function isSettlementItem(
   item: FlowSettlementItem | null,
 ): item is FlowSettlementItem {
   return item !== null;
+}
+
+function isSettlementPaymentLink(
+  link: FlowSettlementPaymentLink | null,
+): link is FlowSettlementPaymentLink {
+  return link !== null;
 }

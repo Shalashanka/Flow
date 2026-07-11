@@ -140,6 +140,76 @@ export async function getFlowTransactionsByIds(
     .filter(transaction => transaction !== null);
 }
 
+export async function getFlowPaymentCandidateTransactions(
+  range: FlowDateRange,
+): Promise<FlowTransaction[]> {
+  const response: unknown = await aqlQuery(
+    q('transactions')
+      .filter({
+        $and: [{ date: { $gte: range.start } }, { date: { $lte: range.end } }],
+        'account.offbudget': false,
+      })
+      .orderBy([{ date: 'desc' }, { sort_order: 'desc' }])
+      .options({ splits: 'grouped' })
+      .select([
+        'id',
+        'date',
+        'account',
+        'category',
+        'payee',
+        'amount',
+        'notes',
+        'cleared',
+        'reconciled',
+        { accountName: 'account.name' },
+        { categoryName: 'category.name' },
+        { payeeName: 'payee.name' },
+      ]),
+  );
+
+  return getDataRows(response)
+    .map(normalizeTransaction)
+    .filter(transaction => transaction !== null);
+}
+
+export async function getFlowPaymentTransactionsByIds(
+  transactionIds: string[],
+): Promise<FlowTransaction[]> {
+  const ids = [...new Set(transactionIds.filter(Boolean))];
+
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const response: unknown = await aqlQuery(
+    q('transactions')
+      .filter({
+        id: { $oneof: ids },
+        'account.offbudget': false,
+      })
+      .orderBy([{ date: 'desc' }, { sort_order: 'desc' }])
+      .options({ splits: 'grouped' })
+      .select([
+        'id',
+        'date',
+        'account',
+        'category',
+        'payee',
+        'amount',
+        'notes',
+        'cleared',
+        'reconciled',
+        { accountName: 'account.name' },
+        { categoryName: 'category.name' },
+        { payeeName: 'payee.name' },
+      ]),
+  );
+
+  return getDataRows(response)
+    .map(normalizeTransaction)
+    .filter(transaction => transaction !== null);
+}
+
 export async function getCurrentMonthCashflowSummary(): Promise<FlowCashflowSummary> {
   const data = await getCurrentMonthCashflowData();
   return data.summary;

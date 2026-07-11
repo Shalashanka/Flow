@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router';
 
@@ -18,6 +18,7 @@ import { View } from '@actual-app/components/view';
 
 import { getFlowPages } from '#flow/flowPages';
 import { useIsTestEnv } from '#hooks/useIsTestEnv';
+import { useNavigate } from '#hooks/useNavigate';
 import { useSyncServerStatus } from '#hooks/useSyncServerStatus';
 
 import { Item } from './Item';
@@ -27,6 +28,7 @@ export function PrimaryButtons() {
   const { t } = useTranslation();
   const [isMoreOpen, setMoreOpen] = useState(false);
   const onMoreToggle = useCallback(() => setMoreOpen(open => !open), []);
+  const navigate = useNavigate();
   const location = useLocation();
   const flowPages = getFlowPages(t);
   const primaryFlowPages = flowPages.filter(
@@ -48,11 +50,13 @@ export function PrimaryButtons() {
     '/tools',
   ].some(route => location.pathname.startsWith(route));
 
-  useEffect(() => {
-    if (isMoreActive) {
-      setMoreOpen(true);
-    }
-  }, [isMoreActive, location.pathname]);
+  const navigateFromMore = useCallback(
+    (path: string) => {
+      setMoreOpen(false);
+      void navigate(path);
+    },
+    [navigate],
+  );
 
   return (
     <View style={{ flexShrink: 0 }}>
@@ -81,40 +85,40 @@ export function PrimaryButtons() {
               key={page.id}
               title={page.title}
               Icon={page.Icon}
-              to={page.path}
+              onClick={() => navigateFromMore(page.path)}
               indent={15}
             />
           ))}
           <SecondaryItem
             title={t('Payees')}
             Icon={SvgStoreFront}
-            to="/payees"
+            onClick={() => navigateFromMore('/payees')}
             indent={15}
           />
           <SecondaryItem
             title={t('Rules')}
             Icon={SvgTuning}
-            to="/rules"
+            onClick={() => navigateFromMore('/rules')}
             indent={15}
           />
           {isUsingServer && (
             <SecondaryItem
               title={t('Bank Sync')}
               Icon={SvgCreditCard}
-              to="/bank-sync"
+              onClick={() => navigateFromMore('/bank-sync')}
               indent={15}
             />
           )}
           <SecondaryItem
             title={t('Tags')}
             Icon={SvgTag}
-            to="/tags"
+            onClick={() => navigateFromMore('/tags')}
             indent={15}
           />
           <SecondaryItem
             title={t('Settings')}
             Icon={SvgCog}
-            to="/settings"
+            onClick={() => navigateFromMore('/settings')}
             indent={15}
           />
         </>
