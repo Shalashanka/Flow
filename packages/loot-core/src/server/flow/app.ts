@@ -18,6 +18,15 @@ import type {
   FlowSettlementStatus,
   FlowSettlementSummary,
 } from '#shared/flow-settlement';
+import {
+  isFlowSubscriptionMatchType,
+  isFlowSubscriptionRecurrence,
+  isFlowSubscriptionStatus,
+} from '#shared/flow-subscription';
+import type {
+  FlowSubscription,
+  FlowSubscriptionMatch,
+} from '#shared/flow-subscription';
 import { normalizeFlowTransactionMetadataData } from '#shared/flow-transaction-metadata';
 import type {
   FlowTransactionMetadataData,
@@ -229,6 +238,64 @@ type FlowDebtDeleteResponse = {
   deleted: boolean;
 };
 
+type FlowSubscriptionRow = {
+  id: string;
+  name: string | null;
+  payee_id: string | null;
+  merchant_match_id: string | null;
+  actual_schedule_id: string | null;
+  category_id: string | null;
+  account_id: string | null;
+  amount: number | null;
+  recurrence: string | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  next_expected_date: string | null;
+  status: string | null;
+  confidence: number | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowSubscriptionMatchRow = {
+  id: string;
+  subscription_id: string | null;
+  actual_transaction_id: string | null;
+  match_type: string | null;
+  confidence: number | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowSubscriptionSaveRequest = Partial<FlowSubscription> & {
+  id?: string;
+};
+
+type FlowSubscriptionDeleteRequest = {
+  id: string;
+};
+
+type FlowSubscriptionDeleteResponse = {
+  deleted: boolean;
+};
+
+type FlowSubscriptionMatchesGetRequest = {
+  subscriptionId?: string;
+};
+
+type FlowSubscriptionMatchesSaveRequest = {
+  subscriptionId: string;
+  matches: FlowSubscriptionMatch[];
+};
+
+type FlowSubscriptionMatchesSaveResponse = {
+  saved: boolean;
+  count: number;
+};
+
 export type FlowHandlers = {
   'flow/settings-get': typeof getFlowSettingsRow;
   'flow/settings-save': typeof saveFlowSettingsRow;
@@ -250,6 +317,11 @@ export type FlowHandlers = {
   'flow/debts-get': typeof getDebts;
   'flow/debt-save': typeof saveDebt;
   'flow/debt-delete': typeof deleteDebt;
+  'flow/subscriptions-get': typeof getSubscriptions;
+  'flow/subscription-save': typeof saveSubscription;
+  'flow/subscription-delete': typeof deleteSubscription;
+  'flow/subscription-matches-get': typeof getSubscriptionMatches;
+  'flow/subscription-matches-save': typeof saveSubscriptionMatches;
 };
 
 export const app = createApp<FlowHandlers>();
@@ -289,6 +361,11 @@ app.method('flow/settlement-month-reopen', mutator(reopenSettlementMonth));
 app.method('flow/debts-get', getDebts);
 app.method('flow/debt-save', mutator(saveDebt));
 app.method('flow/debt-delete', mutator(deleteDebt));
+app.method('flow/subscriptions-get', getSubscriptions);
+app.method('flow/subscription-save', mutator(saveSubscription));
+app.method('flow/subscription-delete', mutator(deleteSubscription));
+app.method('flow/subscription-matches-get', getSubscriptionMatches);
+app.method('flow/subscription-matches-save', mutator(saveSubscriptionMatches));
 
 async function getFlowSettingsRow(): Promise<FlowSettingsResponse> {
   return {
@@ -533,6 +610,443 @@ async function deleteDebt({
   });
 
   return { deleted: true };
+}
+
+async function getSubscriptions(): Promise<FlowSubscription[]> {
+  const rows = await selectSubscriptionRows();
+
+  return rows.map(rowToSubscription).filter(isSubscription);
+}
+
+async function saveSubscription(
+  subscription: FlowSubscriptionSaveRequest,
+): Promise<FlowSubscription> {
+  const normalizedSubscription = normalizeSubscription(subscription);
+  const now = new Date().toISOString();
+  const existingRow = await db.first<Pick<FlowSubscriptionRow, 'id'>>(
+    'SELECT id FROM flow_subscriptions WHERE id = ?',
+    [normalizedSubscription.id],
+  );
+  const row = subscriptionToRow(normalizedSubscription, now);
+
+  if (existingRow) {
+    await db.update('flow_subscriptions', row);
+  } else {
+    await db.insert('flow_subscriptions', {
+      ...row,
+      created_at: now,
+    });
+  }
+
+  const savedRow = await selectSubscriptionRow(normalizedSubscription.id);
+
+  if (!savedRow) {
+    throw new Error('Flow subscription save failed.');
+  }
+
+  const savedSubscription = rowToSubscription(savedRow);
+
+  if (!savedSubscription) {
+    throw new Error('Flow subscription save returned invalid data.');
+  }
+
+  return savedSubscription;
+}
+
+async function deleteSubscription({
+  id,
+}: FlowSubscriptionDeleteRequest): Promise<FlowSubscriptionDeleteResponse> {
+  const normalizedId = requireSubscriptionId(id);
+  const existingRow = await db.first<Pick<FlowSubscriptionRow, 'id'>>(
+    'SELECT id FROM flow_subscriptions WHERE id = ?',
+    [normalizedId],
+  );
+
+  if (!existingRow) {
+    return { deleted: false };
+  }
+
+  const now = new Date().toISOString();
+
+  await batchMessages(async () => {
+    await db.update('flow_subscriptions', {
+      id: normalizedId,
+      tombstone: 1,
+      updated_at: now,
+    });
+    await tombstoneSubscriptionMatches(normalizedId, now);
+  });
+
+  return { deleted: true };
+}
+
+async function getSubscriptionMatches({
+  subscriptionId,
+}: FlowSubscriptionMatchesGetRequest): Promise<FlowSubscriptionMatch[]> {
+  const normalizedSubscriptionId = getTrimmedString(subscriptionId);
+  const rows = normalizedSubscriptionId
+    ? await selectSubscriptionMatchRows(normalizedSubscriptionId)
+    : await selectSubscriptionMatchRows();
+
+  return rows.map(rowToSubscriptionMatch).filter(isSubscriptionMatch);
+}
+
+async function saveSubscriptionMatches({
+  subscriptionId,
+  matches,
+}: FlowSubscriptionMatchesSaveRequest): Promise<FlowSubscriptionMatchesSaveResponse> {
+  const normalizedSubscriptionId = requireSubscriptionId(subscriptionId);
+  const subscription = await selectSubscriptionRow(normalizedSubscriptionId);
+
+  if (!subscription) {
+    throw new Error('Flow subscription does not exist.');
+  }
+
+  const normalizedMatches = [
+    ...new Map(
+      (matches ?? [])
+        .map(match =>
+          normalizeSubscriptionMatch(normalizedSubscriptionId, match),
+        )
+        .filter(isSubscriptionMatch)
+        .map(match => [match.actualTransactionId, match]),
+    ).values(),
+  ];
+  const now = new Date().toISOString();
+
+  await batchMessages(async () => {
+    await tombstoneSubscriptionMatches(normalizedSubscriptionId, now);
+
+    for (const match of normalizedMatches) {
+      await upsertSubscriptionMatch(match, now);
+    }
+  });
+
+  return { saved: true, count: normalizedMatches.length };
+}
+
+async function selectSubscriptionRows(): Promise<FlowSubscriptionRow[]> {
+  return db.all<FlowSubscriptionRow>(
+    `
+      SELECT
+        id,
+        name,
+        payee_id,
+        merchant_match_id,
+        actual_schedule_id,
+        category_id,
+        account_id,
+        amount,
+        recurrence,
+        first_seen,
+        last_seen,
+        next_expected_date,
+        status,
+        confidence,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_subscriptions
+      WHERE COALESCE(tombstone, 0) = 0
+      ORDER BY status, name COLLATE NOCASE
+    `,
+  );
+}
+
+async function selectSubscriptionRow(
+  id: string,
+): Promise<FlowSubscriptionRow | null> {
+  return db.first<FlowSubscriptionRow>(
+    `
+      SELECT
+        id,
+        name,
+        payee_id,
+        merchant_match_id,
+        actual_schedule_id,
+        category_id,
+        account_id,
+        amount,
+        recurrence,
+        first_seen,
+        last_seen,
+        next_expected_date,
+        status,
+        confidence,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_subscriptions
+      WHERE id = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [id],
+  );
+}
+
+async function selectSubscriptionMatchRows(
+  subscriptionId?: string,
+): Promise<FlowSubscriptionMatchRow[]> {
+  if (subscriptionId) {
+    return db.all<FlowSubscriptionMatchRow>(
+      `
+        SELECT
+          id,
+          subscription_id,
+          actual_transaction_id,
+          match_type,
+          confidence,
+          tombstone,
+          created_at,
+          updated_at
+        FROM flow_subscription_matches
+        WHERE subscription_id = ?
+          AND COALESCE(tombstone, 0) = 0
+        ORDER BY created_at, id
+      `,
+      [subscriptionId],
+    );
+  }
+
+  return db.all<FlowSubscriptionMatchRow>(
+    `
+      SELECT
+        id,
+        subscription_id,
+        actual_transaction_id,
+        match_type,
+        confidence,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_subscription_matches
+      WHERE COALESCE(tombstone, 0) = 0
+      ORDER BY subscription_id, created_at, id
+    `,
+  );
+}
+
+function subscriptionToRow(subscription: FlowSubscription, updatedAt: string) {
+  return {
+    id: subscription.id,
+    name: subscription.name,
+    payee_id: subscription.payeeId ?? null,
+    merchant_match_id: subscription.merchantMatchId ?? null,
+    actual_schedule_id: subscription.actualScheduleId ?? null,
+    category_id: subscription.categoryId ?? null,
+    account_id: subscription.accountId ?? null,
+    amount: subscription.amount,
+    recurrence: subscription.recurrence,
+    first_seen: subscription.firstSeen ?? null,
+    last_seen: subscription.lastSeen ?? null,
+    next_expected_date: subscription.nextExpectedDate ?? null,
+    status: subscription.status,
+    confidence: subscription.confidence,
+    notes: subscription.notes ?? null,
+    tombstone: 0,
+    updated_at: updatedAt,
+  };
+}
+
+function rowToSubscription(row: FlowSubscriptionRow): FlowSubscription | null {
+  const id = getString(row.id);
+  const name = getString(row.name);
+
+  if (!id || !name) {
+    return null;
+  }
+
+  const recurrence = getString(row.recurrence);
+  const status = getString(row.status);
+
+  return {
+    id,
+    name,
+    payeeId: getString(row.payee_id),
+    merchantMatchId: getString(row.merchant_match_id),
+    actualScheduleId: getString(row.actual_schedule_id),
+    categoryId: getString(row.category_id),
+    accountId: getString(row.account_id),
+    amount: Math.max(0, getInteger(row.amount) ?? 0),
+    recurrence: isFlowSubscriptionRecurrence(recurrence)
+      ? recurrence
+      : 'unknown',
+    firstSeen: getDateString(row.first_seen),
+    lastSeen: getDateString(row.last_seen),
+    nextExpectedDate: getDateString(row.next_expected_date),
+    status: isFlowSubscriptionStatus(status) ? status : 'candidate',
+    confidence: normalizeConfidence(row.confidence),
+    notes: getString(row.notes),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
+  };
+}
+
+function normalizeSubscription(
+  subscription: FlowSubscriptionSaveRequest,
+): FlowSubscription {
+  const id = getTrimmedString(subscription.id) ?? createSubscriptionId();
+  const name = getTrimmedString(subscription.name);
+  const recurrence = getTrimmedString(subscription.recurrence);
+  const status = getTrimmedString(subscription.status);
+
+  if (!name) {
+    throw new Error('Subscription name is required.');
+  }
+
+  return {
+    id,
+    name,
+    payeeId: getTrimmedString(subscription.payeeId),
+    merchantMatchId: getTrimmedString(subscription.merchantMatchId),
+    actualScheduleId: getTrimmedString(subscription.actualScheduleId),
+    categoryId: getTrimmedString(subscription.categoryId),
+    accountId: getTrimmedString(subscription.accountId),
+    amount: Math.max(0, getInteger(subscription.amount) ?? 0),
+    recurrence: isFlowSubscriptionRecurrence(recurrence)
+      ? recurrence
+      : 'unknown',
+    firstSeen: getDateString(subscription.firstSeen),
+    lastSeen: getDateString(subscription.lastSeen),
+    nextExpectedDate: getDateString(subscription.nextExpectedDate),
+    status: isFlowSubscriptionStatus(status) ? status : 'candidate',
+    confidence: normalizeConfidence(subscription.confidence),
+    notes: getTrimmedString(subscription.notes),
+  };
+}
+
+function normalizeSubscriptionMatch(
+  subscriptionId: string,
+  match: FlowSubscriptionMatch,
+): FlowSubscriptionMatch | null {
+  const actualTransactionId = getTrimmedString(match?.actualTransactionId);
+
+  if (!actualTransactionId) {
+    return null;
+  }
+
+  const matchType = getTrimmedString(match.matchType);
+
+  return {
+    id:
+      getTrimmedString(match.id) ??
+      createSubscriptionMatchId(subscriptionId, actualTransactionId),
+    subscriptionId,
+    actualTransactionId,
+    matchType: isFlowSubscriptionMatchType(matchType)
+      ? matchType
+      : 'recurrence',
+    confidence: normalizeConfidence(match.confidence),
+  };
+}
+
+function rowToSubscriptionMatch(
+  row: FlowSubscriptionMatchRow,
+): FlowSubscriptionMatch | null {
+  const id = getString(row.id);
+  const subscriptionId = getString(row.subscription_id);
+  const actualTransactionId = getString(row.actual_transaction_id);
+
+  if (!id || !subscriptionId || !actualTransactionId) {
+    return null;
+  }
+
+  const matchType = getString(row.match_type);
+
+  return {
+    id,
+    subscriptionId,
+    actualTransactionId,
+    matchType: isFlowSubscriptionMatchType(matchType)
+      ? matchType
+      : 'recurrence',
+    confidence: normalizeConfidence(row.confidence),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
+  };
+}
+
+async function upsertSubscriptionMatch(
+  match: FlowSubscriptionMatch,
+  updatedAt: string,
+) {
+  const row = {
+    id: match.id,
+    subscription_id: match.subscriptionId,
+    actual_transaction_id: match.actualTransactionId,
+    match_type: match.matchType,
+    confidence: match.confidence,
+    tombstone: 0,
+    updated_at: updatedAt,
+  };
+  const existingRow = await db.first<Pick<FlowSubscriptionMatchRow, 'id'>>(
+    'SELECT id FROM flow_subscription_matches WHERE id = ?',
+    [match.id],
+  );
+
+  if (existingRow) {
+    await db.update('flow_subscription_matches', row);
+  } else {
+    await db.insert('flow_subscription_matches', {
+      ...row,
+      created_at: updatedAt,
+    });
+  }
+}
+
+async function tombstoneSubscriptionMatches(
+  subscriptionId: string,
+  updatedAt: string,
+) {
+  const rows = await db.all<Pick<FlowSubscriptionMatchRow, 'id'>>(
+    `
+      SELECT id
+      FROM flow_subscription_matches
+      WHERE subscription_id = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [subscriptionId],
+  );
+
+  for (const row of rows) {
+    await db.update('flow_subscription_matches', {
+      id: row.id,
+      tombstone: 1,
+      updated_at: updatedAt,
+    });
+  }
+}
+
+function requireSubscriptionId(id: string): string {
+  const normalizedId = getTrimmedString(id);
+
+  if (!normalizedId) {
+    throw new Error('Subscription id is required.');
+  }
+
+  return normalizedId;
+}
+
+function createSubscriptionId() {
+  return `flow-subscription:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createSubscriptionMatchId(
+  subscriptionId: string,
+  actualTransactionId: string,
+) {
+  return `flow-subscription-match:${subscriptionId}:${actualTransactionId}`;
+}
+
+function normalizeConfidence(value: unknown): number {
+  return Math.max(0, Math.min(100, getInteger(value) ?? 0));
+}
+
+function getDateString(value: unknown): string | undefined {
+  const date = getString(value);
+  return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined;
 }
 
 async function selectDebtRows(): Promise<FlowDebtRow[]> {
@@ -1760,4 +2274,16 @@ function isSettlementPaymentLink(
 
 function isDebt(debt: FlowDebt | null): debt is FlowDebt {
   return debt !== null;
+}
+
+function isSubscription(
+  subscription: FlowSubscription | null,
+): subscription is FlowSubscription {
+  return subscription !== null;
+}
+
+function isSubscriptionMatch(
+  match: FlowSubscriptionMatch | null,
+): match is FlowSubscriptionMatch {
+  return match !== null;
 }

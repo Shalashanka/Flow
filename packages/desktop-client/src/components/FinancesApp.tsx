@@ -18,6 +18,7 @@ import { getFlowPages } from '#flow/flowPages';
 import { FlowPlaceholderPage } from '#flow/FlowPlaceholderPage';
 import { FlowSettingsPage } from '#flow/FlowSettingsPage';
 import { SettlementPage } from '#flow/SettlementPage';
+import { SubscriptionsPage } from '#flow/SubscriptionsPage';
 import { useAccounts } from '#hooks/useAccounts';
 import { useGlobalPref } from '#hooks/useGlobalPref';
 import { useLocalPref } from '#hooks/useLocalPref';
@@ -347,6 +348,8 @@ export function FinancesApp() {
                           <FlowSettingsPage />
                         ) : page.id === 'settlement' ? (
                           <SettlementPage />
+                        ) : page.id === 'subscriptions' ? (
+                          <SubscriptionsPage />
                         ) : (
                           <FlowPlaceholderPage page={page} />
                         )

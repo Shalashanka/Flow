@@ -101,6 +101,38 @@ export async function getFlowTransactions(
     .filter(transaction => transaction !== null);
 }
 
+export async function getFlowSubscriptionTransactions(
+  range: FlowDateRange,
+): Promise<FlowTransaction[]> {
+  const response: unknown = await aqlQuery(
+    q('transactions')
+      .filter({
+        $and: [{ date: { $gte: range.start } }, { date: { $lte: range.end } }],
+        'payee.transfer_acct': null,
+      })
+      .orderBy([{ date: 'asc' }, { sort_order: 'asc' }])
+      .options({ splits: 'grouped' })
+      .select([
+        'id',
+        'date',
+        'account',
+        'category',
+        'payee',
+        'amount',
+        'notes',
+        'cleared',
+        'reconciled',
+        { accountName: 'account.name' },
+        { categoryName: 'category.name' },
+        { payeeName: 'payee.name' },
+      ]),
+  );
+
+  return getDataRows(response)
+    .map(normalizeTransaction)
+    .filter(transaction => transaction !== null);
+}
+
 export async function getFlowTransactionsByIds(
   transactionIds: string[],
 ): Promise<FlowTransaction[]> {
