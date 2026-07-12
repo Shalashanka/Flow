@@ -13,6 +13,7 @@ import { getLatestAppVersion, sync } from '#app/appSlice';
 import { ProtectedRoute } from '#auth/ProtectedRoute';
 import { Permissions } from '#auth/types';
 import { CashflowPage } from '#flow/CashflowPage';
+import { DebtsPage } from '#flow/DebtsPage';
 import { getFlowPages } from '#flow/flowPages';
 import { FlowPlaceholderPage } from '#flow/FlowPlaceholderPage';
 import { FlowSettingsPage } from '#flow/FlowSettingsPage';
@@ -340,6 +341,8 @@ export function FinancesApp() {
                       element={
                         page.id === 'cashflow' ? (
                           <CashflowPage />
+                        ) : page.id === 'debts' ? (
+                          <DebtsPage />
                         ) : page.id === 'flow-settings' ? (
                           <FlowSettingsPage />
                         ) : page.id === 'settlement' ? (

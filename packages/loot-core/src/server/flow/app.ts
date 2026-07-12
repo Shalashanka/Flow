@@ -2,6 +2,8 @@ import { createApp } from '#server/app';
 import * as db from '#server/db';
 import { mutator } from '#server/mutators';
 import { batchMessages } from '#server/sync';
+import { isFlowDebtPriority, isFlowDebtStatus } from '#shared/flow-debt';
+import type { FlowDebt } from '#shared/flow-debt';
 import {
   isFlowSettlementMonthStatus,
   isFlowSettlementPaymentLinkStatus,
@@ -194,6 +196,39 @@ type FlowSettlementMonthClosureRow = {
   updated_at: string | null;
 };
 
+type FlowDebtRow = {
+  id: string;
+  name: string | null;
+  lender: string | null;
+  actual_account_id: string | null;
+  actual_category_id: string | null;
+  original_amount: number | null;
+  current_balance_override: number | null;
+  minimum_payment: number | null;
+  planned_payment: number | null;
+  due_day: number | null;
+  interest_rate_bps: number | null;
+  priority: string | null;
+  status: string | null;
+  active: number | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowDebtSaveRequest = Partial<FlowDebt> & {
+  id?: string;
+};
+
+type FlowDebtDeleteRequest = {
+  id: string;
+};
+
+type FlowDebtDeleteResponse = {
+  deleted: boolean;
+};
+
 export type FlowHandlers = {
   'flow/settings-get': typeof getFlowSettingsRow;
   'flow/settings-save': typeof saveFlowSettingsRow;
@@ -212,6 +247,9 @@ export type FlowHandlers = {
   'flow/settlement-month-close-get': typeof getSettlementMonthClose;
   'flow/settlement-month-close-save': typeof saveSettlementMonthClose;
   'flow/settlement-month-reopen': typeof reopenSettlementMonth;
+  'flow/debts-get': typeof getDebts;
+  'flow/debt-save': typeof saveDebt;
+  'flow/debt-delete': typeof deleteDebt;
 };
 
 export const app = createApp<FlowHandlers>();
@@ -248,6 +286,9 @@ app.method(
   mutator(saveSettlementMonthClose),
 );
 app.method('flow/settlement-month-reopen', mutator(reopenSettlementMonth));
+app.method('flow/debts-get', getDebts);
+app.method('flow/debt-save', mutator(saveDebt));
+app.method('flow/debt-delete', mutator(deleteDebt));
 
 async function getFlowSettingsRow(): Promise<FlowSettingsResponse> {
   return {
@@ -429,6 +470,248 @@ async function deleteTransactionMetadata({
   });
 
   return { deleted: true };
+}
+
+async function getDebts(): Promise<FlowDebt[]> {
+  const rows = await selectDebtRows();
+
+  return rows.map(rowToDebt).filter(isDebt);
+}
+
+async function saveDebt(debt: FlowDebtSaveRequest): Promise<FlowDebt> {
+  const normalizedDebt = normalizeDebt(debt);
+  const now = new Date().toISOString();
+  const existingRow = await db.first<Pick<FlowDebtRow, 'id'>>(
+    'SELECT id FROM flow_debts WHERE id = ?',
+    [normalizedDebt.id],
+  );
+  const row = debtToRow(normalizedDebt, now);
+
+  if (existingRow) {
+    await db.update('flow_debts', row);
+  } else {
+    await db.insert('flow_debts', {
+      ...row,
+      created_at: now,
+    });
+  }
+
+  const savedRow = await selectDebtRow(normalizedDebt.id);
+
+  if (!savedRow) {
+    throw new Error('Flow debt save failed.');
+  }
+
+  const savedDebt = rowToDebt(savedRow);
+
+  if (!savedDebt) {
+    throw new Error('Flow debt save returned invalid data.');
+  }
+
+  return savedDebt;
+}
+
+async function deleteDebt({
+  id,
+}: FlowDebtDeleteRequest): Promise<FlowDebtDeleteResponse> {
+  const normalizedId = requireDebtId(id);
+  const existingRow = await db.first<Pick<FlowDebtRow, 'id'>>(
+    'SELECT id FROM flow_debts WHERE id = ?',
+    [normalizedId],
+  );
+
+  if (!existingRow) {
+    return { deleted: false };
+  }
+
+  await db.update('flow_debts', {
+    id: normalizedId,
+    status: 'ignored',
+    active: 0,
+    tombstone: 1,
+    updated_at: new Date().toISOString(),
+  });
+
+  return { deleted: true };
+}
+
+async function selectDebtRows(): Promise<FlowDebtRow[]> {
+  return db.all<FlowDebtRow>(
+    `
+      SELECT
+        id,
+        name,
+        lender,
+        actual_account_id,
+        actual_category_id,
+        original_amount,
+        current_balance_override,
+        minimum_payment,
+        planned_payment,
+        due_day,
+        interest_rate_bps,
+        priority,
+        status,
+        active,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_debts
+      WHERE COALESCE(tombstone, 0) = 0
+      ORDER BY active DESC, status, priority DESC, name
+    `,
+  );
+}
+
+async function selectDebtRow(id: string): Promise<FlowDebtRow | null> {
+  return db.first<FlowDebtRow>(
+    `
+      SELECT
+        id,
+        name,
+        lender,
+        actual_account_id,
+        actual_category_id,
+        original_amount,
+        current_balance_override,
+        minimum_payment,
+        planned_payment,
+        due_day,
+        interest_rate_bps,
+        priority,
+        status,
+        active,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_debts
+      WHERE id = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [id],
+  );
+}
+
+function debtToRow(debt: FlowDebt, updatedAt: string) {
+  return {
+    id: debt.id,
+    name: debt.name,
+    lender: debt.lender ?? null,
+    actual_account_id: debt.actualAccountId ?? null,
+    actual_category_id: debt.actualCategoryId ?? null,
+    original_amount: debt.originalAmount,
+    current_balance_override: debt.currentBalanceOverride ?? null,
+    minimum_payment: debt.minimumPayment,
+    planned_payment: debt.plannedPayment,
+    due_day: debt.dueDay ?? null,
+    interest_rate_bps: debt.interestRateBps,
+    priority: debt.priority,
+    status: debt.status,
+    active: debt.active ? 1 : 0,
+    notes: debt.notes ?? null,
+    tombstone: 0,
+    updated_at: updatedAt,
+  };
+}
+
+function rowToDebt(row: FlowDebtRow): FlowDebt | null {
+  const id = getString(row.id);
+  const name = getString(row.name);
+
+  if (!id || !name) {
+    return null;
+  }
+
+  const priority = getString(row.priority);
+  const status = getString(row.status);
+  const dueDay = getInteger(row.due_day);
+
+  return {
+    id,
+    name,
+    lender: getString(row.lender),
+    actualAccountId: getString(row.actual_account_id),
+    actualCategoryId: getString(row.actual_category_id),
+    originalAmount: Math.max(0, getInteger(row.original_amount) ?? 0),
+    currentBalanceOverride: getOptionalNonNegativeInteger(
+      row.current_balance_override,
+    ),
+    minimumPayment: Math.max(0, getInteger(row.minimum_payment) ?? 0),
+    plannedPayment: Math.max(0, getInteger(row.planned_payment) ?? 0),
+    dueDay: isValidDueDay(dueDay) ? dueDay : undefined,
+    interestRateBps: Math.max(0, getInteger(row.interest_rate_bps) ?? 0),
+    priority: isFlowDebtPriority(priority) ? priority : 'normal',
+    status: isFlowDebtStatus(status) ? status : 'active',
+    active: row.active !== 0,
+    notes: getString(row.notes),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
+  };
+}
+
+function normalizeDebt(debt: FlowDebtSaveRequest): FlowDebt {
+  const id = getString(debt.id) ?? createDebtId();
+  const name = getString(debt.name)?.trim();
+  const priority = getString(debt.priority);
+  const status = getString(debt.status);
+  const dueDay = getInteger(debt.dueDay);
+
+  if (!name) {
+    throw new Error('Debt name is required.');
+  }
+
+  return {
+    id,
+    name,
+    lender: getTrimmedString(debt.lender),
+    actualAccountId: getTrimmedString(debt.actualAccountId),
+    actualCategoryId: getTrimmedString(debt.actualCategoryId),
+    originalAmount: Math.max(0, getInteger(debt.originalAmount) ?? 0),
+    currentBalanceOverride: getOptionalNonNegativeInteger(
+      debt.currentBalanceOverride,
+    ),
+    minimumPayment: Math.max(0, getInteger(debt.minimumPayment) ?? 0),
+    plannedPayment: Math.max(0, getInteger(debt.plannedPayment) ?? 0),
+    dueDay: isValidDueDay(dueDay) ? dueDay : undefined,
+    interestRateBps: Math.max(0, getInteger(debt.interestRateBps) ?? 0),
+    priority: isFlowDebtPriority(priority) ? priority : 'normal',
+    status: isFlowDebtStatus(status) ? status : 'active',
+    active: getBoolean(debt.active) ?? true,
+    notes: getTrimmedString(debt.notes),
+  };
+}
+
+function requireDebtId(id: string): string {
+  if (!id) {
+    throw new Error('Debt id is required.');
+  }
+
+  return id;
+}
+
+function createDebtId() {
+  return `flow-debt:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getTrimmedString(value: unknown): string | undefined {
+  const stringValue = getString(value)?.trim();
+  return stringValue ? stringValue : undefined;
+}
+
+function getOptionalNonNegativeInteger(value: unknown): number | undefined {
+  const integer = getInteger(value);
+
+  if (integer == null) {
+    return undefined;
+  }
+
+  return Math.max(0, integer);
+}
+
+function isValidDueDay(value: number | undefined): value is number {
+  return value != null && value >= 1 && value <= 31;
 }
 
 async function selectTransactionMetadataRow(
@@ -1445,6 +1728,18 @@ function getInteger(value: unknown): number | undefined {
     : undefined;
 }
 
+function getBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+
+  return undefined;
+}
+
 function isSettlementSummary(
   settlement: FlowSettlementSummary | null,
 ): settlement is FlowSettlementSummary {
@@ -1461,4 +1756,8 @@ function isSettlementPaymentLink(
   link: FlowSettlementPaymentLink | null,
 ): link is FlowSettlementPaymentLink {
   return link !== null;
+}
+
+function isDebt(debt: FlowDebt | null): debt is FlowDebt {
+  return debt !== null;
 }

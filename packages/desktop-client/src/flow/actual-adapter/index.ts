@@ -210,6 +210,51 @@ export async function getFlowPaymentTransactionsByIds(
     .filter(transaction => transaction !== null);
 }
 
+export async function getFlowCategoryOutflowsForMonth(
+  month: string,
+  categoryIds: string[],
+): Promise<Record<string, number>> {
+  const ids = [...new Set(categoryIds.filter(Boolean))];
+
+  if (ids.length === 0) {
+    return {};
+  }
+
+  const response: unknown = await aqlQuery(
+    q('transactions')
+      .filter({
+        $and: [
+          { date: { $gte: monthUtils.firstDayOfMonth(month) } },
+          { date: { $lte: monthUtils.lastDayOfMonth(month) } },
+        ],
+        category: { $oneof: ids },
+        'account.offbudget': false,
+        'payee.transfer_acct': null,
+      })
+      .options({ splits: 'inline' })
+      .select(['category', 'amount']),
+  );
+  const totalsByCategoryId: Record<string, number> = {};
+
+  for (const row of getDataRows(response)) {
+    if (!row || typeof row !== 'object') {
+      continue;
+    }
+
+    const categoryId = getString(getValue(row, 'category'));
+    const amount = getNumber(getValue(row, 'amount'));
+
+    if (!categoryId || amount == null || amount >= 0) {
+      continue;
+    }
+
+    totalsByCategoryId[categoryId] =
+      (totalsByCategoryId[categoryId] ?? 0) + Math.abs(amount);
+  }
+
+  return totalsByCategoryId;
+}
+
 export async function getCurrentMonthCashflowSummary(): Promise<FlowCashflowSummary> {
   const data = await getCurrentMonthCashflowData();
   return data.summary;
