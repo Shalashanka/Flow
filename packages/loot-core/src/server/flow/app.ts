@@ -2,6 +2,12 @@ import { createApp } from '#server/app';
 import * as db from '#server/db';
 import { mutator } from '#server/mutators';
 import { batchMessages } from '#server/sync';
+import {
+  isFlowCashflowRowType,
+  isFlowCashflowRunStatus,
+  isFlowCashflowStartingCashSource,
+} from '#shared/flow-cashflow';
+import type { FlowCashflowRow, FlowCashflowRun } from '#shared/flow-cashflow';
 import { isFlowDebtPriority, isFlowDebtStatus } from '#shared/flow-debt';
 import type { FlowDebt } from '#shared/flow-debt';
 import {
@@ -296,6 +302,74 @@ type FlowSubscriptionMatchesSaveResponse = {
   count: number;
 };
 
+type FlowCashflowRunRow = {
+  id: string;
+  month: string | null;
+  run_name: string | null;
+  starting_cash: number | null;
+  starting_cash_source: string | null;
+  selected_account_ids: string | null;
+  safe_minimum_balance: number | null;
+  warning_balance: number | null;
+  one_off_name: string | null;
+  one_off_amount: number | null;
+  one_off_date: string | null;
+  status: string | null;
+  lowest_balance: number | null;
+  projected_end_balance: number | null;
+  first_failure_date: string | null;
+  generated_at: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowCashflowDataRow = {
+  id: string;
+  run_id: string | null;
+  row_date: string | null;
+  row_type: string | null;
+  name: string | null;
+  account_id: string | null;
+  category_id: string | null;
+  inflow: number | null;
+  outflow: number | null;
+  balance_after: number | null;
+  confirmed: number | null;
+  source: string | null;
+  source_id: string | null;
+  notes: string | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowCashflowRunsGetRequest = {
+  month?: string;
+};
+
+type FlowCashflowRunSaveRequest = {
+  run: FlowCashflowRun;
+  rows: FlowCashflowRow[];
+};
+
+type FlowCashflowRunSaveResponse = {
+  saved: boolean;
+  runId: string;
+};
+
+type FlowCashflowRunDeleteRequest = {
+  runId: string;
+};
+
+type FlowCashflowRunDeleteResponse = {
+  deleted: boolean;
+};
+
+type FlowCashflowRowsGetRequest = {
+  runId: string;
+};
+
 export type FlowHandlers = {
   'flow/settings-get': typeof getFlowSettingsRow;
   'flow/settings-save': typeof saveFlowSettingsRow;
@@ -322,6 +396,10 @@ export type FlowHandlers = {
   'flow/subscription-delete': typeof deleteSubscription;
   'flow/subscription-matches-get': typeof getSubscriptionMatches;
   'flow/subscription-matches-save': typeof saveSubscriptionMatches;
+  'flow/cashflow-runs-get': typeof getCashflowRuns;
+  'flow/cashflow-run-save': typeof saveCashflowRun;
+  'flow/cashflow-run-delete': typeof deleteCashflowRun;
+  'flow/cashflow-rows-get': typeof getCashflowRows;
 };
 
 export const app = createApp<FlowHandlers>();
@@ -366,6 +444,10 @@ app.method('flow/subscription-save', mutator(saveSubscription));
 app.method('flow/subscription-delete', mutator(deleteSubscription));
 app.method('flow/subscription-matches-get', getSubscriptionMatches);
 app.method('flow/subscription-matches-save', mutator(saveSubscriptionMatches));
+app.method('flow/cashflow-runs-get', getCashflowRuns);
+app.method('flow/cashflow-run-save', mutator(saveCashflowRun));
+app.method('flow/cashflow-run-delete', mutator(deleteCashflowRun));
+app.method('flow/cashflow-rows-get', getCashflowRows);
 
 async function getFlowSettingsRow(): Promise<FlowSettingsResponse> {
   return {
@@ -1047,6 +1129,432 @@ function normalizeConfidence(value: unknown): number {
 function getDateString(value: unknown): string | undefined {
   const date = getString(value);
   return date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined;
+}
+
+async function getCashflowRuns({
+  month,
+}: FlowCashflowRunsGetRequest): Promise<FlowCashflowRun[]> {
+  const normalizedMonth = month ? requireCashflowMonth(month) : undefined;
+  const rows = normalizedMonth
+    ? await selectCashflowRunRows(normalizedMonth)
+    : await selectCashflowRunRows();
+
+  return rows.map(rowToCashflowRun).filter(isCashflowRun);
+}
+
+async function saveCashflowRun({
+  run,
+  rows,
+}: FlowCashflowRunSaveRequest): Promise<FlowCashflowRunSaveResponse> {
+  const normalizedRun = normalizeCashflowRun(run);
+  const normalizedRows = (rows ?? [])
+    .map(row => normalizeCashflowRow(normalizedRun.id, row))
+    .filter(isCashflowRow);
+  const now = new Date().toISOString();
+
+  await batchMessages(async () => {
+    await upsertCashflowRun(normalizedRun, now);
+    await tombstoneCashflowRows(normalizedRun.id, now);
+
+    for (const row of normalizedRows) {
+      await upsertCashflowRow(row, now);
+    }
+  });
+
+  return { saved: true, runId: normalizedRun.id };
+}
+
+async function deleteCashflowRun({
+  runId,
+}: FlowCashflowRunDeleteRequest): Promise<FlowCashflowRunDeleteResponse> {
+  const normalizedRunId = requireCashflowRunId(runId);
+  const existingRow = await db.first<Pick<FlowCashflowRunRow, 'id'>>(
+    'SELECT id FROM flow_cashflow_runs WHERE id = ?',
+    [normalizedRunId],
+  );
+
+  if (!existingRow) {
+    return { deleted: false };
+  }
+
+  const now = new Date().toISOString();
+
+  await batchMessages(async () => {
+    await db.update('flow_cashflow_runs', {
+      id: normalizedRunId,
+      tombstone: 1,
+      updated_at: now,
+    });
+    await tombstoneCashflowRows(normalizedRunId, now);
+  });
+
+  return { deleted: true };
+}
+
+async function getCashflowRows({
+  runId,
+}: FlowCashflowRowsGetRequest): Promise<FlowCashflowRow[]> {
+  const normalizedRunId = requireCashflowRunId(runId);
+  const rows = await selectCashflowDataRows(normalizedRunId);
+
+  return rows.map(rowToCashflowRow).filter(isCashflowRow);
+}
+
+async function selectCashflowRunRows(
+  month?: string,
+): Promise<FlowCashflowRunRow[]> {
+  const columns = `
+    id,
+    month,
+    run_name,
+    starting_cash,
+    starting_cash_source,
+    selected_account_ids,
+    safe_minimum_balance,
+    warning_balance,
+    one_off_name,
+    one_off_amount,
+    one_off_date,
+    status,
+    lowest_balance,
+    projected_end_balance,
+    first_failure_date,
+    generated_at,
+    tombstone,
+    created_at,
+    updated_at
+  `;
+
+  if (month) {
+    return db.all<FlowCashflowRunRow>(
+      `
+        SELECT ${columns}
+        FROM flow_cashflow_runs
+        WHERE month = ?
+          AND COALESCE(tombstone, 0) = 0
+        ORDER BY generated_at DESC, updated_at DESC, id
+      `,
+      [month],
+    );
+  }
+
+  return db.all<FlowCashflowRunRow>(
+    `
+      SELECT ${columns}
+      FROM flow_cashflow_runs
+      WHERE COALESCE(tombstone, 0) = 0
+      ORDER BY month DESC, generated_at DESC, updated_at DESC, id
+    `,
+  );
+}
+
+async function selectCashflowDataRows(
+  runId: string,
+): Promise<FlowCashflowDataRow[]> {
+  return db.all<FlowCashflowDataRow>(
+    `
+      SELECT
+        id,
+        run_id,
+        row_date,
+        row_type,
+        name,
+        account_id,
+        category_id,
+        inflow,
+        outflow,
+        balance_after,
+        confirmed,
+        source,
+        source_id,
+        notes,
+        tombstone,
+        created_at,
+        updated_at
+      FROM flow_cashflow_rows
+      WHERE run_id = ?
+        AND COALESCE(tombstone, 0) = 0
+      ORDER BY row_date, id
+    `,
+    [runId],
+  );
+}
+
+async function upsertCashflowRun(run: FlowCashflowRun, updatedAt: string) {
+  const row = cashflowRunToRow(run, updatedAt);
+  const existingRow = await db.first<Pick<FlowCashflowRunRow, 'id'>>(
+    'SELECT id FROM flow_cashflow_runs WHERE id = ?',
+    [run.id],
+  );
+
+  if (existingRow) {
+    await db.update('flow_cashflow_runs', row);
+  } else {
+    await db.insert('flow_cashflow_runs', {
+      ...row,
+      created_at: updatedAt,
+    });
+  }
+}
+
+async function upsertCashflowRow(row: FlowCashflowRow, updatedAt: string) {
+  const databaseRow = cashflowRowToRow(row, updatedAt);
+  const existingRow = await db.first<Pick<FlowCashflowDataRow, 'id'>>(
+    'SELECT id FROM flow_cashflow_rows WHERE id = ?',
+    [row.id],
+  );
+
+  if (existingRow) {
+    await db.update('flow_cashflow_rows', databaseRow);
+  } else {
+    await db.insert('flow_cashflow_rows', {
+      ...databaseRow,
+      created_at: updatedAt,
+    });
+  }
+}
+
+async function tombstoneCashflowRows(runId: string, updatedAt: string) {
+  const rows = await db.all<Pick<FlowCashflowDataRow, 'id'>>(
+    `
+      SELECT id
+      FROM flow_cashflow_rows
+      WHERE run_id = ?
+        AND COALESCE(tombstone, 0) = 0
+    `,
+    [runId],
+  );
+
+  for (const row of rows) {
+    await db.update('flow_cashflow_rows', {
+      id: row.id,
+      tombstone: 1,
+      updated_at: updatedAt,
+    });
+  }
+}
+
+function cashflowRunToRow(run: FlowCashflowRun, updatedAt: string) {
+  return {
+    id: run.id,
+    month: run.month,
+    run_name: run.runName ?? null,
+    starting_cash: run.startingCash,
+    starting_cash_source: run.startingCashSource,
+    selected_account_ids: JSON.stringify(run.selectedAccountIds),
+    safe_minimum_balance: run.safeMinimumBalance,
+    warning_balance: run.warningBalance,
+    one_off_name: run.oneOffName ?? null,
+    one_off_amount: run.oneOffAmount ?? 0,
+    one_off_date: run.oneOffDate ?? null,
+    status: run.status,
+    lowest_balance: run.lowestBalance,
+    projected_end_balance: run.projectedEndBalance,
+    first_failure_date: run.firstFailureDate ?? null,
+    generated_at: run.generatedAt ?? null,
+    tombstone: 0,
+    updated_at: updatedAt,
+  };
+}
+
+function cashflowRowToRow(row: FlowCashflowRow, updatedAt: string) {
+  return {
+    id: row.id,
+    run_id: row.runId ?? null,
+    row_date: row.date,
+    row_type: row.rowType,
+    name: row.name,
+    account_id: row.accountId ?? null,
+    category_id: row.categoryId ?? null,
+    inflow: row.inflow,
+    outflow: row.outflow,
+    balance_after: row.balanceAfter,
+    confirmed: row.confirmed ? 1 : 0,
+    source: row.source,
+    source_id: row.sourceId ?? null,
+    notes: row.notes ?? null,
+    tombstone: 0,
+    updated_at: updatedAt,
+  };
+}
+
+function rowToCashflowRun(row: FlowCashflowRunRow): FlowCashflowRun | null {
+  const id = getString(row.id);
+  const month = getString(row.month);
+
+  if (!id || !month || !/^\d{4}-\d{2}$/.test(month)) {
+    return null;
+  }
+
+  const startingCashSource = getString(row.starting_cash_source);
+  const status = getString(row.status);
+
+  return {
+    id,
+    month,
+    runName: getString(row.run_name),
+    startingCash: getInteger(row.starting_cash) ?? 0,
+    startingCashSource: isFlowCashflowStartingCashSource(startingCashSource)
+      ? startingCashSource
+      : 'manual',
+    selectedAccountIds: parseStringArray(row.selected_account_ids),
+    safeMinimumBalance: Math.max(0, getInteger(row.safe_minimum_balance) ?? 0),
+    warningBalance: Math.max(0, getInteger(row.warning_balance) ?? 0),
+    oneOffName: getString(row.one_off_name),
+    oneOffAmount: Math.max(0, getInteger(row.one_off_amount) ?? 0),
+    oneOffDate: getDateString(row.one_off_date),
+    status: isFlowCashflowRunStatus(status) ? status : 'draft',
+    lowestBalance: getInteger(row.lowest_balance) ?? 0,
+    projectedEndBalance: getInteger(row.projected_end_balance) ?? 0,
+    firstFailureDate: getDateString(row.first_failure_date),
+    generatedAt: getString(row.generated_at),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
+  };
+}
+
+function rowToCashflowRow(row: FlowCashflowDataRow): FlowCashflowRow | null {
+  const id = getString(row.id);
+  const runId = getString(row.run_id);
+  const date = getDateString(row.row_date);
+  const rowType = getString(row.row_type);
+  const name = getString(row.name);
+  const source = getString(row.source);
+
+  if (
+    !id ||
+    !runId ||
+    !date ||
+    !name ||
+    !source ||
+    !isFlowCashflowRowType(rowType)
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    runId,
+    date,
+    rowType,
+    name,
+    accountId: getString(row.account_id),
+    categoryId: getString(row.category_id),
+    inflow: Math.max(0, getInteger(row.inflow) ?? 0),
+    outflow: Math.max(0, getInteger(row.outflow) ?? 0),
+    balanceAfter: getInteger(row.balance_after) ?? 0,
+    confirmed: row.confirmed !== 0,
+    source,
+    sourceId: getString(row.source_id),
+    notes: getString(row.notes),
+  };
+}
+
+function normalizeCashflowRun(run: FlowCashflowRun): FlowCashflowRun {
+  const id = getTrimmedString(run?.id) ?? createCashflowRunId();
+  const month = requireCashflowMonth(run?.month);
+  const startingCashSource = getTrimmedString(run?.startingCashSource);
+  const status = getTrimmedString(run?.status);
+
+  return {
+    id,
+    month,
+    runName: getTrimmedString(run?.runName),
+    startingCash: getInteger(run?.startingCash) ?? 0,
+    startingCashSource: isFlowCashflowStartingCashSource(startingCashSource)
+      ? startingCashSource
+      : 'manual',
+    selectedAccountIds: normalizeStringArray(run?.selectedAccountIds),
+    safeMinimumBalance: Math.max(0, getInteger(run?.safeMinimumBalance) ?? 0),
+    warningBalance: Math.max(0, getInteger(run?.warningBalance) ?? 0),
+    oneOffName: getTrimmedString(run?.oneOffName),
+    oneOffAmount: Math.max(0, getInteger(run?.oneOffAmount) ?? 0),
+    oneOffDate: getDateString(run?.oneOffDate),
+    status: isFlowCashflowRunStatus(status) ? status : 'draft',
+    lowestBalance: getInteger(run?.lowestBalance) ?? 0,
+    projectedEndBalance: getInteger(run?.projectedEndBalance) ?? 0,
+    firstFailureDate: getDateString(run?.firstFailureDate),
+    generatedAt: getTrimmedString(run?.generatedAt),
+  };
+}
+
+function normalizeCashflowRow(
+  runId: string,
+  row: FlowCashflowRow,
+): FlowCashflowRow | null {
+  const date = getDateString(row?.date);
+  const rowType = getTrimmedString(row?.rowType);
+  const name = getTrimmedString(row?.name);
+  const source = getTrimmedString(row?.source);
+
+  if (!date || !name || !source || !isFlowCashflowRowType(rowType)) {
+    return null;
+  }
+
+  return {
+    id: getTrimmedString(row?.id) ?? createCashflowRowId(runId, rowType, date),
+    runId,
+    date,
+    rowType,
+    name,
+    accountId: getTrimmedString(row?.accountId),
+    categoryId: getTrimmedString(row?.categoryId),
+    inflow: Math.max(0, getInteger(row?.inflow) ?? 0),
+    outflow: Math.max(0, getInteger(row?.outflow) ?? 0),
+    balanceAfter: getInteger(row?.balanceAfter) ?? 0,
+    confirmed: getBoolean(row?.confirmed) ?? false,
+    source,
+    sourceId: getTrimmedString(row?.sourceId),
+    notes: getTrimmedString(row?.notes),
+  };
+}
+
+function requireCashflowMonth(month: string): string {
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error('Cashflow month must use YYYY-MM format.');
+  }
+
+  return month;
+}
+
+function requireCashflowRunId(runId: string): string {
+  const normalizedRunId = getTrimmedString(runId);
+
+  if (!normalizedRunId) {
+    throw new Error('Cashflow run id is required.');
+  }
+
+  return normalizedRunId;
+}
+
+function createCashflowRunId() {
+  return `flow-cashflow-run:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createCashflowRowId(runId: string, rowType: string, date: string) {
+  return `flow-cashflow-row:${runId}:${date}:${rowType}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.map(getTrimmedString).filter(isString))]
+    : [];
+}
+
+function parseStringArray(value: string | null): string[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    return normalizeStringArray(JSON.parse(value) as unknown);
+  } catch {
+    return [];
+  }
+}
+
+function isString(value: string | undefined): value is string {
+  return value !== undefined;
 }
 
 async function selectDebtRows(): Promise<FlowDebtRow[]> {
@@ -2286,4 +2794,12 @@ function isSubscriptionMatch(
   match: FlowSubscriptionMatch | null,
 ): match is FlowSubscriptionMatch {
   return match !== null;
+}
+
+function isCashflowRun(run: FlowCashflowRun | null): run is FlowCashflowRun {
+  return run !== null;
+}
+
+function isCashflowRow(row: FlowCashflowRow | null): row is FlowCashflowRow {
+  return row !== null;
 }

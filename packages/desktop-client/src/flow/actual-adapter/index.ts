@@ -133,6 +133,12 @@ export async function getFlowSubscriptionTransactions(
     .filter(transaction => transaction !== null);
 }
 
+export async function getFlowCashflowTransactions(
+  range: FlowDateRange,
+): Promise<FlowTransaction[]> {
+  return getFlowSubscriptionTransactions(range);
+}
+
 export async function getFlowTransactionsByIds(
   transactionIds: string[],
 ): Promise<FlowTransaction[]> {
