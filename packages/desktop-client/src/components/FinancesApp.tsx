@@ -12,6 +12,7 @@ import * as undo from '@actual-app/core/platform/client/undo';
 import { getLatestAppVersion, sync } from '#app/appSlice';
 import { ProtectedRoute } from '#auth/ProtectedRoute';
 import { Permissions } from '#auth/types';
+import { AffordabilityPage } from '#flow/AffordabilityPage';
 import { CashflowPage } from '#flow/CashflowPage';
 import { DebtsPage } from '#flow/DebtsPage';
 import { getFlowPages } from '#flow/flowPages';
@@ -350,6 +351,8 @@ export function FinancesApp() {
                           <SettlementPage />
                         ) : page.id === 'subscriptions' ? (
                           <SubscriptionsPage />
+                        ) : page.id === 'affordability' ? (
+                          <AffordabilityPage />
                         ) : (
                           <FlowPlaceholderPage page={page} />
                         )

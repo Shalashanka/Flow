@@ -3,6 +3,13 @@ import * as db from '#server/db';
 import { mutator } from '#server/mutators';
 import { batchMessages } from '#server/sync';
 import {
+  isFlowAffordabilityDecision,
+  isFlowAffordabilityPriority,
+  isFlowAffordabilitySharedStatus,
+  isFlowAffordabilitySplitMethod,
+} from '#shared/flow-affordability';
+import type { FlowAffordabilityCheck } from '#shared/flow-affordability';
+import {
   isFlowCashflowRowType,
   isFlowCashflowRunStatus,
   isFlowCashflowStartingCashSource,
@@ -370,6 +377,51 @@ type FlowCashflowRowsGetRequest = {
   runId: string;
 };
 
+type FlowAffordabilityCheckRow = {
+  id: string;
+  purchase_name: string | null;
+  amount: number | null;
+  planned_date: string | null;
+  account_id: string | null;
+  category_id: string | null;
+  paid_by_member_id: string | null;
+  shared_status: string | null;
+  split_method: string | null;
+  priority: string | null;
+  can_wait: number | null;
+  notes: string | null;
+  decision: string | null;
+  reason: string | null;
+  recommended_action: string | null;
+  month_checked: string | null;
+  cashflow_run_id: string | null;
+  balance_before: number | null;
+  balance_after: number | null;
+  lowest_balance_after: number | null;
+  first_failure_date: string | null;
+  safe_minimum_balance: number | null;
+  warning_balance: number | null;
+  tombstone: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FlowAffordabilityChecksGetRequest = {
+  month?: string;
+};
+
+type FlowAffordabilityCheckSaveRequest = {
+  check: FlowAffordabilityCheck;
+};
+
+type FlowAffordabilityCheckDeleteRequest = {
+  id: string;
+};
+
+type FlowAffordabilityCheckDeleteResponse = {
+  deleted: boolean;
+};
+
 export type FlowHandlers = {
   'flow/settings-get': typeof getFlowSettingsRow;
   'flow/settings-save': typeof saveFlowSettingsRow;
@@ -400,6 +452,9 @@ export type FlowHandlers = {
   'flow/cashflow-run-save': typeof saveCashflowRun;
   'flow/cashflow-run-delete': typeof deleteCashflowRun;
   'flow/cashflow-rows-get': typeof getCashflowRows;
+  'flow/affordability-checks-get': typeof getAffordabilityChecks;
+  'flow/affordability-check-save': typeof saveAffordabilityCheck;
+  'flow/affordability-check-delete': typeof deleteAffordabilityCheck;
 };
 
 export const app = createApp<FlowHandlers>();
@@ -448,6 +503,12 @@ app.method('flow/cashflow-runs-get', getCashflowRuns);
 app.method('flow/cashflow-run-save', mutator(saveCashflowRun));
 app.method('flow/cashflow-run-delete', mutator(deleteCashflowRun));
 app.method('flow/cashflow-rows-get', getCashflowRows);
+app.method('flow/affordability-checks-get', getAffordabilityChecks);
+app.method('flow/affordability-check-save', mutator(saveAffordabilityCheck));
+app.method(
+  'flow/affordability-check-delete',
+  mutator(deleteAffordabilityCheck),
+);
 
 async function getFlowSettingsRow(): Promise<FlowSettingsResponse> {
   return {
@@ -1533,6 +1594,279 @@ function createCashflowRunId() {
 
 function createCashflowRowId(runId: string, rowType: string, date: string) {
   return `flow-cashflow-row:${runId}:${date}:${rowType}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function getAffordabilityChecks({
+  month,
+}: FlowAffordabilityChecksGetRequest): Promise<FlowAffordabilityCheck[]> {
+  const normalizedMonth = month ? requireAffordabilityMonth(month) : undefined;
+  const rows = await selectAffordabilityCheckRows(normalizedMonth);
+
+  return rows.map(rowToAffordabilityCheck).filter(isAffordabilityCheck);
+}
+
+async function saveAffordabilityCheck({
+  check,
+}: FlowAffordabilityCheckSaveRequest): Promise<FlowAffordabilityCheck> {
+  const now = new Date().toISOString();
+  const normalizedCheck = normalizeAffordabilityCheck(check);
+  const existingRow = await db.first<FlowAffordabilityCheckRow>(
+    'SELECT * FROM flow_affordability_checks WHERE id = ?',
+    [normalizedCheck.id],
+  );
+  const row = affordabilityCheckToRow(normalizedCheck, now);
+
+  if (existingRow) {
+    await db.update('flow_affordability_checks', row);
+  } else {
+    await db.insert('flow_affordability_checks', {
+      ...row,
+      created_at: now,
+    });
+  }
+
+  return {
+    ...normalizedCheck,
+    createdAt: getString(existingRow?.created_at) ?? now,
+    updatedAt: now,
+  };
+}
+
+async function deleteAffordabilityCheck({
+  id,
+}: FlowAffordabilityCheckDeleteRequest): Promise<FlowAffordabilityCheckDeleteResponse> {
+  const normalizedId = requireAffordabilityCheckId(id);
+  const existingRow = await db.first<Pick<FlowAffordabilityCheckRow, 'id'>>(
+    'SELECT id FROM flow_affordability_checks WHERE id = ?',
+    [normalizedId],
+  );
+
+  if (!existingRow) {
+    return { deleted: false };
+  }
+
+  await db.update('flow_affordability_checks', {
+    id: normalizedId,
+    tombstone: 1,
+    updated_at: new Date().toISOString(),
+  });
+
+  return { deleted: true };
+}
+
+async function selectAffordabilityCheckRows(
+  month?: string,
+): Promise<FlowAffordabilityCheckRow[]> {
+  const columns = `
+    id,
+    purchase_name,
+    amount,
+    planned_date,
+    account_id,
+    category_id,
+    paid_by_member_id,
+    shared_status,
+    split_method,
+    priority,
+    can_wait,
+    notes,
+    decision,
+    reason,
+    recommended_action,
+    month_checked,
+    cashflow_run_id,
+    balance_before,
+    balance_after,
+    lowest_balance_after,
+    first_failure_date,
+    safe_minimum_balance,
+    warning_balance,
+    tombstone,
+    created_at,
+    updated_at
+  `;
+
+  if (month) {
+    return db.all<FlowAffordabilityCheckRow>(
+      `
+        SELECT ${columns}
+        FROM flow_affordability_checks
+        WHERE month_checked = ?
+          AND COALESCE(tombstone, 0) = 0
+        ORDER BY created_at DESC, updated_at DESC, id
+      `,
+      [month],
+    );
+  }
+
+  return db.all<FlowAffordabilityCheckRow>(
+    `
+      SELECT ${columns}
+      FROM flow_affordability_checks
+      WHERE COALESCE(tombstone, 0) = 0
+      ORDER BY month_checked DESC, created_at DESC, updated_at DESC, id
+    `,
+  );
+}
+
+function affordabilityCheckToRow(
+  check: FlowAffordabilityCheck,
+  updatedAt: string,
+) {
+  return {
+    id: check.id,
+    purchase_name: check.purchaseName,
+    amount: check.amount,
+    planned_date: check.plannedDate,
+    account_id: check.accountId ?? null,
+    category_id: check.categoryId ?? null,
+    paid_by_member_id: check.paidByMemberId ?? null,
+    shared_status: check.sharedStatus,
+    split_method: check.splitMethod,
+    priority: check.priority,
+    can_wait: check.canWait ? 1 : 0,
+    notes: check.notes ?? null,
+    decision: check.decision,
+    reason: check.reason ?? null,
+    recommended_action: check.recommendedAction ?? null,
+    month_checked: check.monthChecked,
+    cashflow_run_id: check.cashflowRunId ?? null,
+    balance_before: check.balanceBefore,
+    balance_after: check.balanceAfter,
+    lowest_balance_after: check.lowestBalanceAfter,
+    first_failure_date: check.firstFailureDate ?? null,
+    safe_minimum_balance: check.safeMinimumBalance,
+    warning_balance: check.warningBalance,
+    tombstone: 0,
+    updated_at: updatedAt,
+  };
+}
+
+function rowToAffordabilityCheck(
+  row: FlowAffordabilityCheckRow,
+): FlowAffordabilityCheck | null {
+  const id = getString(row.id);
+  const purchaseName = getString(row.purchase_name);
+  const plannedDate = getDateString(row.planned_date);
+  const storedMonth = getString(row.month_checked);
+  const sharedStatus = getString(row.shared_status);
+  const splitMethod = getString(row.split_method);
+  const priority = getString(row.priority);
+  const decision = getString(row.decision);
+
+  if (!id || !purchaseName || !plannedDate) {
+    return null;
+  }
+
+  return {
+    id,
+    purchaseName,
+    amount: Math.max(0, getInteger(row.amount) ?? 0),
+    plannedDate,
+    accountId: getString(row.account_id),
+    categoryId: getString(row.category_id),
+    paidByMemberId: getString(row.paid_by_member_id),
+    sharedStatus: isFlowAffordabilitySharedStatus(sharedStatus)
+      ? sharedStatus
+      : 'personal',
+    splitMethod: isFlowAffordabilitySplitMethod(splitMethod)
+      ? splitMethod
+      : 'none',
+    priority: isFlowAffordabilityPriority(priority) ? priority : 'normal',
+    canWait: row.can_wait !== 0,
+    notes: getString(row.notes),
+    decision: isFlowAffordabilityDecision(decision) ? decision : 'check',
+    reason: getString(row.reason),
+    recommendedAction: getString(row.recommended_action),
+    monthChecked:
+      storedMonth && /^\d{4}-\d{2}$/.test(storedMonth)
+        ? storedMonth
+        : plannedDate.slice(0, 7),
+    cashflowRunId: getString(row.cashflow_run_id),
+    balanceBefore: getInteger(row.balance_before) ?? 0,
+    balanceAfter: getInteger(row.balance_after) ?? 0,
+    lowestBalanceAfter: getInteger(row.lowest_balance_after) ?? 0,
+    firstFailureDate: getDateString(row.first_failure_date),
+    safeMinimumBalance: Math.max(0, getInteger(row.safe_minimum_balance) ?? 0),
+    warningBalance: Math.max(0, getInteger(row.warning_balance) ?? 0),
+    createdAt: getString(row.created_at),
+    updatedAt: getString(row.updated_at),
+  };
+}
+
+function normalizeAffordabilityCheck(
+  check: FlowAffordabilityCheck,
+): FlowAffordabilityCheck {
+  const purchaseName = getTrimmedString(check?.purchaseName);
+  const plannedDate = getDateString(check?.plannedDate);
+  const amount = getInteger(check?.amount);
+
+  if (!purchaseName) {
+    throw new Error('Affordability purchase name is required.');
+  }
+  if (!plannedDate) {
+    throw new Error('Affordability planned date must use YYYY-MM-DD format.');
+  }
+  if (amount == null || amount <= 0) {
+    throw new Error('Affordability amount must be a positive integer.');
+  }
+
+  const sharedStatus = getTrimmedString(check?.sharedStatus);
+  const splitMethod = getTrimmedString(check?.splitMethod);
+  const priority = getTrimmedString(check?.priority);
+  const decision = getTrimmedString(check?.decision);
+
+  return {
+    id: getTrimmedString(check?.id) ?? createAffordabilityCheckId(),
+    purchaseName,
+    amount,
+    plannedDate,
+    accountId: getTrimmedString(check?.accountId),
+    categoryId: getTrimmedString(check?.categoryId),
+    paidByMemberId: getTrimmedString(check?.paidByMemberId),
+    sharedStatus: isFlowAffordabilitySharedStatus(sharedStatus)
+      ? sharedStatus
+      : 'personal',
+    splitMethod: isFlowAffordabilitySplitMethod(splitMethod)
+      ? splitMethod
+      : 'none',
+    priority: isFlowAffordabilityPriority(priority) ? priority : 'normal',
+    canWait: getBoolean(check?.canWait) ?? true,
+    notes: getTrimmedString(check?.notes),
+    decision: isFlowAffordabilityDecision(decision) ? decision : 'check',
+    reason: getTrimmedString(check?.reason),
+    recommendedAction: getTrimmedString(check?.recommendedAction),
+    monthChecked: plannedDate.slice(0, 7),
+    cashflowRunId: getTrimmedString(check?.cashflowRunId),
+    balanceBefore: getInteger(check?.balanceBefore) ?? 0,
+    balanceAfter: getInteger(check?.balanceAfter) ?? 0,
+    lowestBalanceAfter: getInteger(check?.lowestBalanceAfter) ?? 0,
+    firstFailureDate: getDateString(check?.firstFailureDate),
+    safeMinimumBalance: Math.max(0, getInteger(check?.safeMinimumBalance) ?? 0),
+    warningBalance: Math.max(0, getInteger(check?.warningBalance) ?? 0),
+  };
+}
+
+function requireAffordabilityMonth(month: string): string {
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error('Affordability month must use YYYY-MM format.');
+  }
+
+  return month;
+}
+
+function requireAffordabilityCheckId(id: string): string {
+  const normalizedId = getTrimmedString(id);
+
+  if (!normalizedId) {
+    throw new Error('Affordability check id is required.');
+  }
+
+  return normalizedId;
+}
+
+function createAffordabilityCheckId(): string {
+  return `flow-affordability:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -2802,4 +3136,10 @@ function isCashflowRun(run: FlowCashflowRun | null): run is FlowCashflowRun {
 
 function isCashflowRow(row: FlowCashflowRow | null): row is FlowCashflowRow {
   return row !== null;
+}
+
+function isAffordabilityCheck(
+  check: FlowAffordabilityCheck | null,
+): check is FlowAffordabilityCheck {
+  return check !== null;
 }

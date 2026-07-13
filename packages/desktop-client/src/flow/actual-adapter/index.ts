@@ -68,6 +68,24 @@ export async function getFlowAccounts(): Promise<FlowAccount[]> {
     }));
 }
 
+export async function getFlowAccountBalances(
+  accountIds: string[],
+  cutoff: string,
+): Promise<Record<string, number>> {
+  const uniqueAccountIds = [...new Set(accountIds.filter(Boolean))];
+  const entries = await Promise.all(
+    uniqueAccountIds.map(
+      async accountId =>
+        [
+          accountId,
+          await send('account-balance', { id: accountId, cutoff }),
+        ] as const,
+    ),
+  );
+
+  return Object.fromEntries(entries);
+}
+
 export async function getFlowTransactions(
   range: FlowDateRange,
 ): Promise<FlowTransaction[]> {
